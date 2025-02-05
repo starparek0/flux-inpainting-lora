@@ -27,6 +27,7 @@ os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
 os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
 os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
 
+
 def download_weights(url: str, dest: str) -> None:
     start = time.time()
     print("[!] Initiating download from URL:", url)
@@ -42,6 +43,7 @@ def download_weights(url: str, dest: str) -> None:
         raise
     print("[+] Download completed in:", time.time() - start, "seconds")
 
+
 def print_pipeline_structure(pipe) -> None:
     """
     Wypisuje dostępne atrybuty pipeline oraz te, które są instancjami torch.nn.Module.
@@ -56,39 +58,36 @@ def print_pipeline_structure(pipe) -> None:
             print(f"  Atrybut: {attr} -> {candidate.__class__.__name__}")
     print("[DEBUG] Koniec struktury pipeline.")
 
+
 def apply_lora_updates(model_obj: torch.nn.Module, lora_state_dict: dict, scale: float = 1.0) -> list:
     """
     Dla każdego klucza w lora_state_dict, jeśli kończy się na '.lora_A.weight',
-    próbuje znaleźć odpowiadający klucz bazowy (bez ".lora_A") oraz parę z '.lora_B.weight'.
-    Jeśli para istnieje, oblicza update = lora_B @ lora_A * scale
-    i dodaje go do oryginalnej wagi w modelu.
-    Zwraca listę kluczy, które zostały zmodyfikowane.
+    oblicza odpowiadający update = B @ A (gdzie B ma klucz z końcówką '.lora_B.weight')
+    i dodaje update do oryginalnych wag z kluczem bazowym (bez sufiksu).
+    Zwraca listę kluczy bazowych, które zostały zmodyfikowane.
     """
     updated = []
-    # Pobieramy słownik oryginalnych parametrów modelu
     state_dict = model_obj.state_dict()
-    # Iterujemy po kluczach w lora_state_dict
-    for key in lora_state_dict:
+    for key in list(lora_state_dict.keys()):
         if key.endswith(".lora_A.weight"):
-            base_key = key.replace(".lora_A", "")
-            key_B = key.replace(".lora_A", ".lora_B")
+            base_key = key[:-len(".lora_A.weight")]
+            key_B = base_key + ".lora_B.weight"
             if key_B in lora_state_dict and base_key in state_dict:
                 A = lora_state_dict[key]
                 B = lora_state_dict[key_B]
-                # Upewnij się, że A i B mają kompatybilne kształty do mnożenia – typowo A: (r, d), B: (d, r)
                 update = torch.matmul(B, A) * scale
                 print(f"[~] Aktualizuję {base_key} przy użyciu {key} i {key_B}")
-                state_dict[base_key] += update.to(state_dict[base_key].device)
+                state_dict[base_key] = state_dict[base_key] + update.to(state_dict[base_key].device)
                 updated.append(base_key)
-    # Ładujemy zmodyfikowany state_dict z powrotem do modelu
     model_obj.load_state_dict(state_dict)
     return updated
 
+
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face,
-    mapuje klucze (usuwa fragment "single_" jeśli występuje),
-    a następnie aplikuje update LoRA do submodelu 'transformer' (lub 'unet').
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face, mapuje klucze
+    (usuwa prefiksy "transformer.single_" oraz "transformer.") i aplikuje LoRA update
+    do submodelu 'transformer' (lub 'unet').
     """
     if not lora_filename:
         try:
@@ -124,11 +123,14 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
 
     print_pipeline_structure(pipe)
     print("[DEBUG] Klucze w LoRA weights:", list(lora_state_dict.keys()))
-    # Mapowanie kluczy – usuwamy fragment "single_" jeśli występuje
-    mapped_lora_state_dict = {key.replace("single_", ""): value for key, value in lora_state_dict.items()}
+    # Mapujemy klucze: usuwamy "transformer.single_" i "transformer." 
+    mapped_lora_state_dict = {
+        key.replace("transformer.single_", "").replace("transformer.", ""): value
+        for key, value in lora_state_dict.items()
+    }
     print("[DEBUG] Klucze po mapowaniu:", list(mapped_lora_state_dict.keys()))
     
-    # Wybieramy submodel – sprawdzamy atrybut "transformer" (FluxTransformer2DModel) lub "unet"
+    # Wybieramy submodel: najpierw "transformer", jeśli nie, "unet"
     if hasattr(pipe, "transformer"):
         model_attr = pipe.transformer
         print("[~] Używam atrybutu 'transformer' do aplikacji wag.")
@@ -138,7 +140,10 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     else:
         raise AttributeError("Nie udało się znaleźć właściwego submodelu (transformer lub unet) w pipeline.")
     
-    # Aplikujemy update LoRA – używamy funkcji, która dobiera pary lora_A i lora_B i aktualizuje oryginalne wagi
+    print("[DEBUG] Klucze parametrów modelu:")
+    for name, _ in model_attr.named_parameters():
+        print(f"  {name}")
+    
     updated_keys = apply_lora_updates(model_attr, mapped_lora_state_dict, scale=1.0)
     if not updated_keys:
         print("[WARNING] Żaden parametr nie został zmodyfikowany.")
