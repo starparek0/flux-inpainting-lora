@@ -44,11 +44,51 @@ def download_weights(url: str, dest: str) -> None:
     print("[+] Download completed in:", time.time() - start, "seconds")
 
 
+def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> None:
+    """
+    Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
+    dodaje (sumuje) wagi LoRA do istniejących wag.
+    
+    UWAGA: To uproszczony przykład – w praktyce integracja wag LoRA może wymagać dodatkowych operacji.
+    """
+    for name, param in module.named_parameters():
+        if name in lora_state_dict:
+            print(f"[~] Modyfikacja parametru: {name}")
+            param.data += lora_state_dict[name]
+
+
+def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
+    """
+    Próbuje iterować po wszystkich parametrach pipeline (lub jego podmodułów) i modyfikuje te,
+    których nazwy pasują do kluczy w lora_state_dict.
+    Zwraca listę zmodyfikowanych kluczy.
+    """
+    updated = []
+    if hasattr(pipe, "named_parameters"):
+        for name, param in pipe.named_parameters():
+            if name in lora_state_dict:
+                print(f"[~] Modyfikacja parametru: {name}")
+                param.data += lora_state_dict[name]
+                updated.append(name)
+    else:
+        # Jeśli pipeline nie jest nn.Module, iterujemy po modułach
+        for module in pipe.modules():
+            for name, param in module.named_parameters(recurse=False):
+                # Budujemy "pełną" nazwę – możesz ją dostosować, jeśli jest taka potrzeba
+                full_name = f"{module.__class__.__name__}.{name}"
+                if full_name in lora_state_dict:
+                    print(f"[~] Modyfikacja parametru: {full_name}")
+                    param.data += lora_state_dict[full_name]
+                    updated.append(full_name)
+    return updated
+
+
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i modyfikuje state_dict całego pipeline,
-    dodając do odpowiadających kluczy wartości z LoRA.
-    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i "wstrzykuje" je do parametrów pipeline,
+    iterując po wszystkich parametrach.
+    
+    Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
     w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
     zostanie użyty; w przeciwnym razie pobierze "pytorch_model.bin".
     """
@@ -84,26 +124,12 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    # Pobieramy obecny state_dict pipeline
-    try:
-        current_sd = pipe.state_dict()
-    except Exception as e:
-        raise AttributeError(f"Nie udało się pobrać state_dict z pipeline: {e}")
-    
-    # Iterujemy po kluczach wag LoRA i modyfikujemy state_dict, jeśli klucz istnieje
-    modified_keys = []
-    for key, lora_value in lora_state_dict.items():
-        if key in current_sd:
-            current_sd[key] += lora_value
-            modified_keys.append(key)
-    if not modified_keys:
-        print("[WARNING] Żaden klucz z LoRA weights nie został dopasowany do state_dict modelu.")
+    print("[~] Aktualny model – iteracja po parametrach:")
+    updated_keys = apply_lora_to_pipeline(pipe, lora_state_dict)
+    if not updated_keys:
+        print("[WARNING] Żaden parametr nie został zmodyfikowany.")
     else:
-        print(f"[~] Zmodyfikowano klucze: {modified_keys}")
-    
-    # Ładujemy zmodyfikowany state_dict
-    pipe.load_state_dict(current_sd)
-    print("[~] Wagi LoRA zostały zaaplikowane do state_dict modelu.")
+        print(f"[~] Zmodyfikowano parametry: {updated_keys}")
     return pipe
 
 
