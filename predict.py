@@ -2,6 +2,18 @@
 # https://cog.run/python
 
 import os
+import time
+import torch
+import mimetypes
+import subprocess
+import numpy as np
+from PIL import Image
+from typing import Tuple, Iterator
+from diffusers import FluxInpaintPipeline
+from cog import BasePredictor, Input, Path
+from huggingface_hub import hf_hub_download  # Nowy import potrzebny do pobierania wag
+
+mimetypes.add_type("image/webp", ".webp")
 
 MODEL_TYPE = "dev"  # "schnell" or "dev"
 MODEL_CACHE = "checkpoints"
@@ -15,18 +27,6 @@ os.environ["TORCH_HOME"] = MODEL_CACHE
 os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
 os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
 os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
-
-import time
-import torch
-import mimetypes
-import subprocess
-import numpy as np
-from PIL import Image
-from typing import Tuple, Iterator
-from diffusers import FluxInpaintPipeline
-from cog import BasePredictor, Input, Path
-
-mimetypes.add_type("image/webp", ".webp")
 
 
 def download_weights(url: str, dest: str) -> None:
@@ -45,6 +45,37 @@ def download_weights(url: str, dest: str) -> None:
         )
         raise
     print("[+] Download completed in: ", time.time() - start, "seconds")
+
+
+def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.nn.Module:
+    """
+    Przechodzi po parametrach danego modułu i – jeśli w słowniku wag LoRA znajduje się
+    odpowiadający klucz – dodaje (sumuje) wagi LoRA do oryginalnych wag.
+    
+    UWAGA: To bardzo uproszczony przykład. W rzeczywistości integracja wag LoRA
+    może wymagać dodatkowych operacji, np. skalowania.
+    """
+    for name, param in module.named_parameters():
+        if name in lora_state_dict:
+            param.data += lora_state_dict[name]
+    return module
+
+
+def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = "pytorch_model.bin"):
+    """
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
+    W tym przykładzie iterujemy po modułach UNet (FluxInpaintPipeline zakłada podobną strukturę jak SD)
+    i modyfikujemy wagi.
+    """
+    print("[~] Pobieranie wag LoRA z repozytorium:", lora_repo_id)
+    lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
+    lora_state_dict = torch.load(lora_weights_path, map_location="cpu")
+    
+    for module in pipe.unet.modules():
+        apply_lora_weights(module, lora_state_dict)
+    
+    print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
+    return pipe
 
 
 class Predictor(BasePredictor):
@@ -124,21 +155,31 @@ class Predictor(BasePredictor):
             ge=0,
             le=100,
         ),
+        # Nowe pole – link do repozytorium na HuggingFace z wagami LoRA
+        lora_hf_link: str = Input(
+            description="Link to HuggingFace repository containing LoRA weights (e.g. 'username/model'). Leave blank if not used.",
+            default="",
+        ),
     ) -> Iterator[Path]:
         if not prompt:
             raise ValueError("Please enter a text prompt.")
 
         if seed is None:
             seed = int.from_bytes(os.urandom(4), "big")
-        print(f"Using seed: {seed}")
+        print(f"[~] Using seed: {seed}")
 
         # Ensure height and width are divisible by 8
         height = (height + 7) // 8 * 8
         width = (width + 7) // 8 * 8
 
-        # Load images
+        # Wczytujemy obrazy
         input_image = Image.open(image).convert("RGB")
         mask_image = Image.open(mask).convert("RGB")
+
+        # Jeśli użytkownik podał link do repozytorium z wagami LoRA, wczytujemy je
+        if lora_hf_link.strip():
+            print(f"[~] Loading LoRA weights from: {lora_hf_link}")
+            self.pipe = load_lora_weights(self.pipe, lora_repo_id=lora_hf_link, lora_filename="pytorch_model.bin")
 
         # Generate images
         for i in range(num_outputs):
@@ -154,9 +195,7 @@ class Predictor(BasePredictor):
                 generator=generator,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
-            ).images[
-                0
-            ]  # We're only generating one image at a time
+            ).images[0]  # Generujemy jeden obraz na iterację
 
             # Save the result
             extension = output_format.lower()
