@@ -86,10 +86,10 @@ def apply_lora_to_pipeline(model_obj: torch.nn.Module, lora_state_dict: dict) ->
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów modelu.
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów submodelu.
     Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
-    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
+    zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
     """
     if not lora_filename:
         try:
@@ -125,7 +125,10 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
 
     print_pipeline_structure(pipe)
     
-    # Wybieramy właściwy submodel – sprawdzamy atrybut "transformer" lub "unet"
+    # Debug – wypisanie kluczy z LoRA weights
+    print("[DEBUG] Klucze w LoRA weights:", list(lora_state_dict.keys()))
+    
+    # Wybieramy właściwy submodel – najpierw sprawdzamy atrybut "transformer"
     if hasattr(pipe, "transformer"):
         model_attr = pipe.transformer
         print("[~] Używam atrybutu 'transformer' do aplikacji wag.")
@@ -134,6 +137,11 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
         print("[~] Używam atrybutu 'unet' do aplikacji wag.")
     else:
         raise AttributeError("Nie udało się znaleźć właściwego submodelu (transformer lub unet) w pipeline.")
+    
+    # Debug – wypisanie kluczy parametrów modelu
+    print("[DEBUG] Klucze parametrów modelu:")
+    for name, _ in model_attr.named_parameters():
+        print(f"  {name}")
     
     updated_keys = apply_lora_to_pipeline(model_attr, lora_state_dict)
     if not updated_keys:
@@ -162,8 +170,6 @@ class Predictor(BasePredictor):
             cache_dir=MODEL_CACHE,
             local_files_only=True,
         ).to(self.device)
-        
-        # Debug – wypisujemy strukturę pipeline po załadowaniu
         print_pipeline_structure(self.pipe)
 
     def predict(
