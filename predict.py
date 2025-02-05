@@ -8,10 +8,10 @@ import mimetypes
 import subprocess
 import numpy as np
 from PIL import Image
-from typing import Tuple, Iterator, Union, List, Optional, Dict, Callable
+from typing import Iterator
 from diffusers import FluxInpaintPipeline
 from cog import BasePredictor, Input, Path
-from huggingface_hub import hf_hub_download, list_repo_files  # Używamy list_repo_files zamiast hf_hub_list
+from huggingface_hub import hf_hub_download, list_repo_files  # Używamy list_repo_files
 
 # Dodajemy typ MIME dla .webp
 mimetypes.add_type("image/webp", ".webp")
@@ -46,10 +46,11 @@ def download_weights(url: str, dest: str) -> None:
 
 def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.nn.Module:
     """
-    Iteruje po parametrach danego modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
+    Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
     dodaje (sumuje) wagi LoRA do istniejących wag.
     
-    UWAGA: To bardzo uproszczony przykład – integracja wag LoRA może wymagać dodatkowych operacji (np. skalowania).
+    UWAGA: To uproszczony przykład – w zależności od implementacji LoRA integracja wag
+    może wymagać dodatkowych operacji, np. skalowania.
     """
     for name, param in module.named_parameters():
         if name in lora_state_dict:
@@ -61,9 +62,11 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
     Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
-    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja spróbuje pobrać "pytorch_model.bin".
-    Następnie wagi LoRA są aplikowane do komponentu transformer, który w FluxInpaintPipeline jest głównym modułem generacyjnym.
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
+    zostanie użyty; w przeciwnym wypadku funkcja pobierze "pytorch_model.bin".
+    
+    Następnie funkcja próbuje znaleźć dedykowany submodel w pipeline (najpierw sprawdzając atrybuty
+    'unet', 'transformer' lub 'diffusion_model'). Jeśli nie zostanie znaleziony, stosuje modyfikację dla całego pipeline.
     """
     if not lora_filename:
         try:
@@ -96,10 +99,12 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
         except Exception as e:
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
-    # Zamiast próbować uzyskać dostęp do nieistniejącego atrybutu unet, wykorzystujemy transformer
-    model_attr = getattr(pipe, 'transformer', None)
+
+    # Próba znalezienia dedykowanego submodelu:
+    model_attr = getattr(pipe, 'unet', None) or getattr(pipe, 'transformer', None) or getattr(pipe, 'diffusion_model', None)
     if model_attr is None:
-        raise AttributeError("FluxInpaintPipeline nie udostępnia atrybutu 'transformer'. Sprawdź dokumentację FluxInpaintPipeline.")
+        print("[~] Nie znaleziono dedykowanego submodelu, aplikuję wagę do całego pipeline")
+        model_attr = pipe  # aplikujemy dla całego pipeline
     for module in model_attr.modules():
         apply_lora_weights(module, lora_state_dict)
     print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
