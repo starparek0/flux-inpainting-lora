@@ -61,13 +61,10 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
-    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
-    zostanie użyty; w przeciwnym wypadku funkcja spróbuje pobrać "pytorch_model.bin".
-    
-    UWAGA: W tej implementacji zakładamy, że FluxInpaintPipeline posiada komponent dostępny jako `model`
-    zawierający warstwy, do których należy zaaplikować LoRA. Jeśli Twój pipeline udostępnia je pod inną nazwą,
-    zmień "pipe.model" na odpowiedni atrybut.
+    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium
+    (gałąź "main") w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors".
+    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja spróbuje pobrać "pytorch_model.bin".
+    Następnie próbuje zastosować wagi do wewnętrznego modelu, którego nazwa zostanie ustalona dynamicznie.
     """
     if not lora_filename:
         try:
@@ -100,11 +97,16 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
         except Exception as e:
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
-    # Tutaj zamiast pipe.unet, używamy pipe.model (lub odpowiedni atrybut) – dostosuj do struktury FluxInpaintPipeline
-    for module in pipe.model.modules():
+
+    # Próba uzyskania dostępu do wewnętrznego modelu (spróbuj kolejno kilku atrybutów)
+    model_attr = getattr(pipe, 'unet', None) or getattr(pipe, 'diffusion_model', None) or getattr(pipe, 'inpaint_model', None)
+    if model_attr is None:
+        raise AttributeError("FluxInpaintPipeline nie udostępnia atrybutu zawierającego model. Sprawdź dokumentację FluxInpaintPipeline.")
+    for module in model_attr.modules():
         apply_lora_weights(module, lora_state_dict)
     print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
     return pipe
+
 
 
 class Predictor(BasePredictor):
