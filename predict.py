@@ -86,13 +86,11 @@ def apply_lora_to_pipeline(model_obj: torch.nn.Module, lora_state_dict: dict) ->
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów właściwego submodelu.
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów modelu.
     Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
-    zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
+    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
     """
-print_pipeline_structure(self.pipe)
-
     if not lora_filename:
         try:
             file_list = list_repo_files(repo_id=lora_repo_id, revision="main")
@@ -127,7 +125,7 @@ print_pipeline_structure(self.pipe)
 
     print_pipeline_structure(pipe)
     
-    # Wybieramy właściwy submodel – najpierw sprawdzamy atrybut "transformer"
+    # Wybieramy właściwy submodel – sprawdzamy atrybut "transformer" lub "unet"
     if hasattr(pipe, "transformer"):
         model_attr = pipe.transformer
         print("[~] Używam atrybutu 'transformer' do aplikacji wag.")
@@ -164,6 +162,9 @@ class Predictor(BasePredictor):
             cache_dir=MODEL_CACHE,
             local_files_only=True,
         ).to(self.device)
+        
+        # Debug – wypisujemy strukturę pipeline po załadowaniu
+        print_pipeline_structure(self.pipe)
 
     def predict(
         self,
