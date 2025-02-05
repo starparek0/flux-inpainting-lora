@@ -44,30 +44,14 @@ def download_weights(url: str, dest: str) -> None:
     print("[+] Download completed in:", time.time() - start, "seconds")
 
 
-def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.nn.Module:
-    """
-    Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
-    dodaje (sumuje) wagi LoRA do istniejących wag.
-    
-    UWAGA: To bardzo uproszczony przykład – integracja wag LoRA może wymagać dodatkowych operacji.
-    """
-    for name, param in module.named_parameters():
-        if name in lora_state_dict:
-            param.data += lora_state_dict[name]
-    return module
-
-
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
-    Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i modyfikuje state_dict całego pipeline,
+    dodając do odpowiadających kluczy wartości z LoRA.
+    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
     w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
     zostanie użyty; w przeciwnym razie pobierze "pytorch_model.bin".
-    Następnie funkcja próbuje znaleźć submodel, do którego mają być aplikowane wagi – sprawdzamy kolejno
-    atrybuty: unet, transformer, diffusion_model, model, _model. Jeśli żaden nie zostanie znaleziony,
-    stosujemy fallback i iterujemy po wszystkich modułach pipe.
     """
-    # Wyszukiwanie nazwy pliku
     if not lora_filename:
         try:
             file_list = list_repo_files(repo_id=lora_repo_id, revision="main")
@@ -82,7 +66,6 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać listy plików z repozytorium: {e}. Używam 'pytorch_model.bin'")
             lora_filename = "pytorch_model.bin"
     
-    # Pobieranie wag
     if lora_filename.lower().endswith(".safetensors"):
         try:
             print(f"[~] Próba pobrania {lora_filename}...")
@@ -101,25 +84,32 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    # Próba znalezienia odpowiedniego submodelu
-    model_attr = (getattr(pipe, 'unet', None) or getattr(pipe, 'transformer', None) or
-                  getattr(pipe, 'diffusion_model', None) or getattr(pipe, 'model', None) or
-                  getattr(pipe, '_model', None))
-    if model_attr is None:
-        print("[~] Nie znaleziono dedykowanego submodelu; iteruję po wszystkich modułach pipeline.")
-        model_attr = pipe
+    # Pobieramy obecny state_dict pipeline
+    try:
+        current_sd = pipe.state_dict()
+    except Exception as e:
+        raise AttributeError(f"Nie udało się pobrać state_dict z pipeline: {e}")
+    
+    # Iterujemy po kluczach wag LoRA i modyfikujemy state_dict, jeśli klucz istnieje
+    modified_keys = []
+    for key, lora_value in lora_state_dict.items():
+        if key in current_sd:
+            current_sd[key] += lora_value
+            modified_keys.append(key)
+    if not modified_keys:
+        print("[WARNING] Żaden klucz z LoRA weights nie został dopasowany do state_dict modelu.")
     else:
-        print(f"[~] Używam submodelu: {model_attr.__class__.__name__}")
-    for module in model_attr.modules():
-        apply_lora_weights(module, lora_state_dict)
-    print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
+        print(f"[~] Zmodyfikowano klucze: {modified_keys}")
+    
+    # Ładujemy zmodyfikowany state_dict
+    pipe.load_state_dict(current_sd)
+    print("[~] Wagi LoRA zostały zaaplikowane do state_dict modelu.")
     return pipe
 
 
 class Predictor(BasePredictor):
     def setup(self) -> None:
         print(f"[~] Model type: {MODEL_TYPE}")
-
         if not os.path.exists(MODEL_CACHE):
             os.makedirs(MODEL_CACHE)
         model_files = [f"models--black-forest-labs--FLUX.1-{MODEL_TYPE}.tar"]
@@ -129,7 +119,6 @@ class Predictor(BasePredictor):
             dest_path = os.path.join(MODEL_CACHE, filename)
             if not os.path.exists(dest_path.replace(".tar", "")):
                 download_weights(url, dest_path)
-
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.pipe = FluxInpaintPipeline.from_pretrained(
             f"black-forest-labs/FLUX.1-{MODEL_TYPE}",
@@ -200,25 +189,16 @@ class Predictor(BasePredictor):
     ) -> Iterator[Path]:
         if not prompt:
             raise ValueError("Please enter a text prompt.")
-
         if seed is None:
             seed = int.from_bytes(os.urandom(4), "big")
         print(f"[~] Using seed: {seed}")
-
-        # Upewnij się, że wysokość i szerokość są wielokrotnością 8
         height = (height + 7) // 8 * 8
         width = (width + 7) // 8 * 8
-
-        # Wczytujemy obrazy
         input_image = Image.open(image).convert("RGB")
         mask_image = Image.open(mask).convert("RGB")
-
-        # Jeśli użytkownik podał link do repozytorium z wagami LoRA, ładujemy je.
         if lora_hf_link.strip():
             print(f"[~] Loading LoRA weights from: {lora_hf_link}")
             self.pipe = load_lora_weights(self.pipe, lora_repo_id=lora_hf_link)
-
-        # Generowanie obrazów
         for i in range(num_outputs):
             generator = torch.Generator(device=self.device).manual_seed(seed + i)
             result = self.pipe(
@@ -231,22 +211,17 @@ class Predictor(BasePredictor):
                 generator=generator,
                 num_inference_steps=num_inference_steps,
                 guidance_scale=guidance_scale,
-            ).images[0]  # Generujemy jeden obraz na iterację
-
-            # Zapisujemy wynik
+            ).images[0]
             extension = output_format.lower()
             extension = "jpeg" if extension == "jpg" else extension
             output_path = f"/tmp/output_{i}.{extension}"
-
             print(f"[~] Saving to {output_path}...")
             print(f"[~] Output format: {extension.upper()}")
             if output_format != "png":
                 print(f"[~] Output quality: {output_quality}")
-
             save_params = {"format": extension.upper()}
             if output_format != "png":
                 save_params["quality"] = output_quality
                 save_params["optimize"] = True
-
             result.save(output_path, **save_params)
             yield Path(output_path)
