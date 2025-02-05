@@ -49,7 +49,7 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.
     Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
     dodaje (sumuje) wagi LoRA do istniejących wag.
     
-    UWAGA: To bardzo uproszczony przykład – integracja wag LoRA może wymagać dodatkowych operacji (np. skalowania).
+    UWAGA: To bardzo uproszczony przykład – integracja wag LoRA może wymagać dodatkowych operacji.
     """
     for name, param in module.named_parameters():
         if name in lora_state_dict:
@@ -60,13 +60,14 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
-    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
-    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja pobierze "pytorch_model.bin".
-    Następnie LoRA weights są aplikowane do właściwego submodelu – próbujemy kolejno:
-    'unet', 'transformer', 'diffusion_model', 'model', '_model'. Jeśli żaden nie zostanie znaleziony,
-    iterujemy po wszystkich modułach całego pipeline.
+    Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
+    zostanie użyty; w przeciwnym razie pobierze "pytorch_model.bin".
+    Następnie funkcja próbuje znaleźć submodel, do którego mają być aplikowane wagi – sprawdzamy kolejno
+    atrybuty: unet, transformer, diffusion_model, model, _model. Jeśli żaden nie zostanie znaleziony,
+    stosujemy fallback i iterujemy po wszystkich modułach pipe.
     """
+    # Wyszukiwanie nazwy pliku
     if not lora_filename:
         try:
             file_list = list_repo_files(repo_id=lora_repo_id, revision="main")
@@ -76,11 +77,12 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
                 print(f"[~] Znaleziono plik safetensors: {lora_filename}")
             else:
                 lora_filename = "pytorch_model.bin"
-                print("[~] Nie znaleziono pliku safetensors, używam domyślnego 'pytorch_model.bin'")
+                print("[~] Nie znaleziono pliku safetensors, używam 'pytorch_model.bin'")
         except Exception as e:
             print(f"[ERROR] Nie udało się pobrać listy plików z repozytorium: {e}. Używam 'pytorch_model.bin'")
             lora_filename = "pytorch_model.bin"
     
+    # Pobieranie wag
     if lora_filename.lower().endswith(".safetensors"):
         try:
             print(f"[~] Próba pobrania {lora_filename}...")
@@ -99,13 +101,15 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    # Próba uzyskania dostępu do właściwego submodelu – próbujemy kolejno różne atrybuty.
+    # Próba znalezienia odpowiedniego submodelu
     model_attr = (getattr(pipe, 'unet', None) or getattr(pipe, 'transformer', None) or
                   getattr(pipe, 'diffusion_model', None) or getattr(pipe, 'model', None) or
                   getattr(pipe, '_model', None))
     if model_attr is None:
         print("[~] Nie znaleziono dedykowanego submodelu; iteruję po wszystkich modułach pipeline.")
         model_attr = pipe
+    else:
+        print(f"[~] Używam submodelu: {model_attr.__class__.__name__}")
     for module in model_attr.modules():
         apply_lora_weights(module, lora_state_dict)
     print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
