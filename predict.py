@@ -63,8 +63,10 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
     Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium
     (gałąź "main") w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors".
-    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja spróbuje pobrać "pytorch_model.bin".
-    Następnie próbuje zastosować wagi do wewnętrznego modelu, którego nazwa zostanie ustalona dynamicznie.
+    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja
+    spróbuje pobrać "pytorch_model.bin".
+    Następnie próbuje zastosować wagi do wewnętrznego modelu – najpierw próbuje uzyskać dostęp do
+    pipe.unet, a jeśli to się nie uda, próbuje pipe._unet, co często jest używane do przechowywania modelu.
     """
     if not lora_filename:
         try:
@@ -98,14 +100,15 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    # Próba uzyskania dostępu do wewnętrznego modelu (spróbuj kolejno kilku atrybutów)
-    model_attr = getattr(pipe, 'unet', None) or getattr(pipe, 'diffusion_model', None) or getattr(pipe, 'inpaint_model', None)
+    # Próba uzyskania dostępu do wewnętrznego modelu:
+    model_attr = getattr(pipe, 'unet', None) or getattr(pipe, '_unet', None) or getattr(pipe, 'diffusion_model', None) or getattr(pipe, 'inpaint_model', None)
     if model_attr is None:
         raise AttributeError("FluxInpaintPipeline nie udostępnia atrybutu zawierającego model. Sprawdź dokumentację FluxInpaintPipeline.")
     for module in model_attr.modules():
         apply_lora_weights(module, lora_state_dict)
     print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
     return pipe
+
 
 
 
