@@ -70,37 +70,29 @@ def print_pipeline_structure(pipe) -> None:
     print("[DEBUG] Koniec struktury pipeline.")
 
 
-def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
+def apply_lora_to_pipeline(model_obj: torch.nn.Module, lora_state_dict: dict) -> list:
     """
-    Próbuje zastosować LoRA weights do wszystkich modułów znalezionych w pipeline.
+    Próbuje zastosować LoRA weights do wszystkich modułów w danym obiekcie model_obj.
     Zwraca listę zmodyfikowanych nazw.
     """
     updated = []
-    if hasattr(pipe, "named_parameters"):
-        for name, param in pipe.named_parameters():
-            if name in lora_state_dict:
-                print(f"[~] Modyfikacja parametru: {name}")
-                param.data += lora_state_dict[name]
-                updated.append(name)
-    else:
-        for module in pipe.modules():
-            for name, param in module.named_parameters(recurse=False):
-                full_name = f"{module.__class__.__name__}.{name}"
-                if full_name in lora_state_dict:
-                    print(f"[~] Modyfikacja parametru: {full_name}")
-                    param.data += lora_state_dict[full_name]
-                    updated.append(full_name)
+    for name, param in model_obj.named_parameters():
+        if name in lora_state_dict:
+            print(f"[~] Modyfikacja parametru: {name}")
+            param.data += lora_state_dict[name]
+            updated.append(name)
     return updated
 
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów modelu.
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów właściwego submodelu.
     Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
-    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
-    Następnie stosuje LoRA weights globalnie do wszystkich parametrów modelu.
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
+    zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
     """
+print_pipeline_structure(self.pipe)
+
     if not lora_filename:
         try:
             file_list = list_repo_files(repo_id=lora_repo_id, revision="main")
@@ -135,7 +127,17 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
 
     print_pipeline_structure(pipe)
     
-    updated_keys = apply_lora_to_pipeline(pipe, lora_state_dict)
+    # Wybieramy właściwy submodel – najpierw sprawdzamy atrybut "transformer"
+    if hasattr(pipe, "transformer"):
+        model_attr = pipe.transformer
+        print("[~] Używam atrybutu 'transformer' do aplikacji wag.")
+    elif hasattr(pipe, "unet"):
+        model_attr = pipe.unet
+        print("[~] Używam atrybutu 'unet' do aplikacji wag.")
+    else:
+        raise AttributeError("Nie udało się znaleźć właściwego submodelu (transformer lub unet) w pipeline.")
+    
+    updated_keys = apply_lora_to_pipeline(model_attr, lora_state_dict)
     if not updated_keys:
         print("[WARNING] Żaden parametr nie został zmodyfikowany.")
     else:
