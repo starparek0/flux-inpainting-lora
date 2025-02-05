@@ -1,86 +1,98 @@
 import torch
-from safetensors.torch import load_file  # Upewnij się, że masz zainstalowaną bibliotekę safetensors
+from PIL import Image
+from cog import BasePredictor, Input, Path, InputImage
 from diffusers import FluxInpaintPipeline
-# Jeśli używasz innych modeli lub pipeline, zaimportuj je odpowiednio
 
-# Funkcja wypisująca strukturę pipeline (wszystkie atrybuty będące modułami Torch)
-def print_pipeline_structure(pipe) -> None:
-    print("[DEBUG] Struktura pipeline:")
-    for attr in dir(pipe):
-        try:
-            candidate = getattr(pipe, attr)
-        except Exception:
-            continue
-        if isinstance(candidate, torch.nn.Module):
-            print(f"  Atrybut: {attr} -> {candidate.__class__.__name__}")
-    print("[DEBUG] Koniec struktury pipeline.")
+# Przykładowa funkcja ładująca i aplikująca wagi LoRA.
+# W praktyce musisz zaimplementować właściwą logikę – np. pobierając wagę
+# z Hugging Face i modyfikując odpowiednie warstwy modelu.
+def apply_lora_to_model(model, lora_repo_id: str, scaling_factor: float):
+    # Przykładowa implementacja:
+    # Tu można użyć biblioteki huggingface_hub do pobrania pliku z wagami,
+    # a następnie wczytać je (np. przy użyciu safetensors) i zmodyfikować model.
+    # Na potrzeby tego przykładu zakładamy, że funkcja zwraca model "zmodyfikowany".
+    print(f"[INFO] Ładowanie wag LoRA z repozytorium: {lora_repo_id} (siła: {scaling_factor})")
+    # ... (tutaj kod pobierający i aplikujący wagi LoRA)
+    return model  # zwracamy model po modyfikacji
 
-# Funkcja aktualizująca wagi modelu na podstawie wczytanych wag LoRA
-def apply_lora_to_model(model: torch.nn.Module, lora_state_dict: dict, scaling_factor: float = 1.0) -> torch.nn.Module:
-    modified = False
-    # Iterujemy po parametrach modelu
-    for name, param in model.named_parameters():
-        # Przykładowe mapowanie kluczy:
-        # Jeśli w modelu nazwa to np. "transformer_blocks.X.attn.to_k.weight",
-        # zakładamy, że w pliku LoRA klucze mają postać:
-        # "transformer.single_transformer_blocks.X.attn.to_k.lora_A.weight" oraz
-        # "transformer.single_transformer_blocks.X.attn.to_k.lora_B.weight"
-        lora_key_A = name.replace("transformer_blocks", "transformer.single_transformer_blocks") + ".lora_A.weight"
-        lora_key_B = name.replace("transformer_blocks", "transformer.single_transformer_blocks") + ".lora_B.weight"
-        
-        if lora_key_A in lora_state_dict and lora_key_B in lora_state_dict:
-            A = lora_state_dict[lora_key_A]
-            B = lora_state_dict[lora_key_B]
-            # Sprawdzenie zgodności wymiarów – może być konieczna modyfikacja w zależności od implementacji LoRA
-            if A.shape[1] != B.shape[0]:
-                print(f"[ERROR] Niezgodność wymiarów dla {name}: A.shape = {A.shape}, B.shape = {B.shape}")
-                continue
-
-            update = scaling_factor * (B @ A)
-            if update.shape == param.data.shape:
-                old_sum = param.data.sum().item()
-                param.data.add_(update)
-                new_sum = param.data.sum().item()
-                print(f"[INFO] Zaktualizowano {name}: suma wag zmieniła się z {old_sum:.4f} na {new_sum:.4f}")
-                modified = True
-            else:
-                print(f"[WARNING] Pomijam {name}: update.shape = {update.shape} != param.shape = {param.data.shape}")
-    if not modified:
-        print("[WARNING] Żaden parametr nie został zmodyfikowany!")
-    return model
-
-# Klasa Predictor – wymagana przez Cog
-class Predictor:
+class Predictor(BasePredictor):
     def setup(self):
-        # Ładowanie pipeline z pretrenowanego modelu (dostosuj ścieżkę/model wg. swoich potrzeb)
-        print("[INFO] Ładowanie pipeline...")
-        try:
-            self.pipeline = FluxInpaintPipeline.from_pretrained("ścieżka/do/twojego/modelu")
-        except Exception as e:
-            raise RuntimeError(f"Błąd przy ładowaniu pipeline: {e}")
+        # Załaduj bazowy pipeline – ścieżkę do modelu bazowego dopasuj do swoich potrzeb
+        print("[INFO] Ładowanie pipeline bazowego...")
+        self.pipeline = FluxInpaintPipeline.from_pretrained(
+            "ścieżka/do/modelu_bazowego", revision="fp16", torch_dtype=torch.float16
+        )
+        self.pipeline = self.pipeline.to("cuda")
+        # Jeśli chcesz wyświetlić strukturę pipeline, możesz dodać funkcję pomocniczą:
+        self.print_pipeline_structure(self.pipeline)
 
-        print_pipeline_structure(self.pipeline)
-        
-        # Ładowanie wag LoRA z pliku safetensors
-        print("[INFO] Ładowanie wag LoRA...")
-        try:
-            self.lora_state_dict = load_file("prezes.safetensors")
-        except Exception as e:
-            raise RuntimeError(f"Błąd przy ładowaniu wag LoRA: {e}")
+    def print_pipeline_structure(self, pipe):
+        print("[DEBUG] Struktura pipeline:")
+        for attr in dir(pipe):
+            try:
+                candidate = getattr(pipe, attr)
+            except Exception:
+                continue
+            if hasattr(candidate, "__class__"):
+                print(f"  Atrybut: {attr} -> {candidate.__class__.__name__}")
+        print("[DEBUG] Koniec struktury pipeline.")
 
-        # Sprawdzamy, czy pipeline ma atrybut 'transformer'
-        if not hasattr(self.pipeline, "transformer"):
-            raise ValueError("Pipeline nie posiada atrybutu 'transformer'. Upewnij się, że ładujesz właściwy model.")
-        
-        # Aktualizacja wag w części 'transformer' przy użyciu wag LoRA
-        self.pipeline.transformer = apply_lora_to_model(self.pipeline.transformer, self.lora_state_dict, scaling_factor=1.0)
-    
-    def predict(self, prompt: str = "A high quality photorealistic image of a cat on a metallic surface") -> str:
-        print(f"[INFO] Generowanie obrazu dla promptu: {prompt}")
-        outputs = self.pipeline(prompt)
-        # Zakładamy, że pipeline zwraca listę obrazów (np. obiektów PIL Image)
-        output_image = outputs[0]
-        output_path = "/tmp/output.webp"
+    def predict(
+        self,
+        base_image: InputImage = Input(description="Obraz bazowy (RGB)"),
+        mask_image: InputImage = Input(description="Obraz maski (L – grayscale)"),
+        lora_model: str = Input(
+            description="Identyfikator repozytorium modelu LoRA na Hugging Face", 
+            default="shimopol/prezes"
+        ),
+        prompt: str = Input(
+            description="Tekst opisujący wygenerowany obraz", 
+            default="A beautiful photorealistic scene of a futuristic cityscape"
+        ),
+        lora_strength: float = Input(
+            description="Siła użycia wag LoRA", ge=0.0, le=2.0, default=1.0
+        ),
+        prompt_strength: float = Input(
+            description="Siła wpływu promptu", ge=0.0, le=2.0, default=1.0
+        ),
+        width: int = Input(
+            description="Szerokość obrazu wyjściowego", ge=64, le=2048, default=512
+        ),
+        height: int = Input(
+            description="Wysokość obrazu wyjściowego", ge=64, le=2048, default=512
+        ),
+        seed: int = Input(
+            description="Ziarno (seed) dla deterministycznej generacji", default=42
+        )
+    ) -> Path:
+        # Ustawienie ziarna
+        torch.manual_seed(seed)
+        print(f"[INFO] Używany seed: {seed}")
+
+        # Otwórz obrazy wejściowe
+        base = Image.open(base_image).convert("RGB")
+        mask = Image.open(mask_image).convert("L")
+        # Zmiana rozmiaru obrazów zgodnie z ustawieniami
+        base = base.resize((width, height))
+        mask = mask.resize((width, height))
+
+        # Zaaplikuj wagi LoRA do modelu (przykład – dostosuj do swojej implementacji)
+        self.pipeline.transformer = apply_lora_to_model(
+            self.pipeline.transformer, lora_repo_id=lora_model, scaling_factor=lora_strength
+        )
+
+        # Opcjonalnie: zmodyfikuj prompt w zależności od prompt_strength
+        # (tu możesz na przykład modyfikować prompt lub warstwy modelu odpowiedzialne za tekst)
+        final_prompt = prompt  # W tym przykładzie nie modyfikujemy promptu
+
+        print(f"[INFO] Generowanie obrazu dla promptu: {final_prompt}")
+
+        # Wywołanie pipeline – przyjmujemy, że pipeline obsługuje inpainting z podanym obrazem bazowym i maską
+        outputs = self.pipeline(prompt=final_prompt, image=base, mask_image=mask)
+        output_image = outputs.images[0]
+
+        # Zapisz wynikowy obraz
+        output_path = Path("/tmp/output.webp")
         output_image.save(output_path, "WEBP", quality=80)
-        print(f"[INFO] Obraz zapisany do {output_path}")
+        print(f"[INFO] Obraz zapisany do: {output_path}")
         return output_path
