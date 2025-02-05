@@ -11,7 +11,7 @@ from PIL import Image
 from typing import Tuple, Iterator
 from diffusers import FluxInpaintPipeline
 from cog import BasePredictor, Input, Path
-from huggingface_hub import hf_hub_download, hf_hub_list  # Importujemy również funkcję listującą pliki
+from huggingface_hub import hf_hub_download, hf_hub_list  # Importujemy również listowanie plików
 
 # Dodajemy typ MIME dla .webp
 mimetypes.add_type("image/webp", ".webp")
@@ -46,7 +46,7 @@ def download_weights(url: str, dest: str) -> None:
 
 def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.nn.Module:
     """
-    Iteruje po parametrach danego modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
+    Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
     dodaje (sumuje) wagi LoRA do istniejących wag.
     
     UWAGA: To bardzo uproszczony przykład. W zależności od implementacji LoRA,
@@ -61,15 +61,15 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
-    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
-    w poszukiwaniu pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony, zostanie użyty;
-    w przeciwnym wypadku zostanie użyty "pytorch_model.bin".
+    Jeśli parametr lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium
+    (gałąź "main") w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
+    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku funkcja spróbuje pobrać "pytorch_model.bin".
     """
-    # Jeśli nie podano nazwy pliku, przeszukujemy repozytorium
     if not lora_filename:
         try:
             file_list = hf_hub_list(repo_id=lora_repo_id, revision="main")
-            safetensors_files = [f for f in file_list if f.endswith(".safetensors")]
+            # Używamy metody lower() dla pewności, że dopasujemy rozszerzenie niezależnie od wielkości liter.
+            safetensors_files = [f for f in file_list if f.lower().endswith(".safetensors")]
             if safetensors_files:
                 lora_filename = safetensors_files[0]
                 print(f"[~] Znaleziono plik safetensors: {lora_filename}")
@@ -80,11 +80,10 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać listy plików z repozytorium: {e}. Używam 'pytorch_model.bin'")
             lora_filename = "pytorch_model.bin"
     
-    # Ładowanie wag w zależności od rozszerzenia pliku
-    if lora_filename.endswith(".safetensors"):
+    if lora_filename.lower().endswith(".safetensors"):
         try:
             print(f"[~] Próba pobrania {lora_filename}...")
-            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
+            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename, revision="main")
             from safetensors.torch import load_file as safe_load
             lora_state_dict = safe_load(lora_weights_path)
         except Exception as e:
@@ -93,7 +92,7 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     else:
         try:
             print(f"[~] Próba pobrania {lora_filename}...")
-            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
+            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename, revision="main")
             lora_state_dict = torch.load(lora_weights_path, map_location="cpu")
         except Exception as e:
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
