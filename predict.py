@@ -1,53 +1,8 @@
-# Prediction interface for Cog ⚙️
-# https://cog.run/python
-
-import os
-import time
 import torch
-import mimetypes
-import subprocess
-import numpy as np
-from PIL import Image
-from typing import Iterator
-from diffusers import FluxInpaintPipeline
-from cog import BasePredictor, Input, Path
-from huggingface_hub import hf_hub_download, list_repo_files
+from safetensors.torch import load_file  # Upewnij się, że masz zainstalowaną bibliotekę safetensors
 
-# Dodajemy typ MIME dla .webp
-mimetypes.add_type("image/webp", ".webp")
-
-MODEL_TYPE = "dev"  # "schnell" lub "dev"
-MODEL_CACHE = "checkpoints"
-BASE_URL = f"https://weights.replicate.delivery/default/flux-1-inpainting/{MODEL_CACHE}/"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_HOME"] = MODEL_CACHE
-os.environ["TORCH_HOME"] = MODEL_CACHE
-os.environ["HF_DATASETS_CACHE"] = MODEL_CACHE
-os.environ["TRANSFORMERS_CACHE"] = MODEL_CACHE
-os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
-
-
-def download_weights(url: str, dest: str) -> None:
-    start = time.time()
-    print("[!] Initiating download from URL:", url)
-    print("[~] Destination path:", dest)
-    if ".tar" in dest:
-        dest = os.path.dirname(dest)
-    command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
-    try:
-        print(f"[~] Running command: {' '.join(command)}")
-        subprocess.check_call(command, close_fds=False)
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}.")
-        raise
-    print("[+] Download completed in:", time.time() - start, "seconds")
-
-
+# Funkcja wypisująca strukturę pipeline (wszystkie atrybuty będące modułami Torch)
 def print_pipeline_structure(pipe) -> None:
-    """
-    Wypisuje dostępne atrybuty pipeline oraz te, które są instancjami torch.nn.Module.
-    """
     print("[DEBUG] Struktura pipeline:")
     for attr in dir(pipe):
         try:
@@ -58,215 +13,85 @@ def print_pipeline_structure(pipe) -> None:
             print(f"  Atrybut: {attr} -> {candidate.__class__.__name__}")
     print("[DEBUG] Koniec struktury pipeline.")
 
+# Funkcja aktualizująca wagi modelu na podstawie wczytanych wag LoRA
+def apply_lora_to_model(model: torch.nn.Module, lora_state_dict: dict, scaling_factor: float = 1.0) -> torch.nn.Module:
+    modified = False
+    # Iterujemy po parametrach modelu
+    for name, param in model.named_parameters():
+        # Przykładowe mapowanie klucza:
+        # Jeśli w modelu nazwa to "transformer_blocks.X.attn.to_k.weight",
+        # to zakładamy, że w LoRA mamy klucze:
+        # "transformer.single_transformer_blocks.X.attn.to_k.lora_A.weight" oraz
+        # "transformer.single_transformer_blocks.X.attn.to_k.lora_B.weight"
+        lora_key_A = name.replace("transformer_blocks", "transformer.single_transformer_blocks") + ".lora_A.weight"
+        lora_key_B = name.replace("transformer_blocks", "transformer.single_transformer_blocks") + ".lora_B.weight"
+        
+        if lora_key_A in lora_state_dict and lora_key_B in lora_state_dict:
+            A = lora_state_dict[lora_key_A]
+            B = lora_state_dict[lora_key_B]
+            # Zakładamy, że operacja B @ A daje tensor o kształcie zgodnym z parametrem
+            if A.shape[1] != B.shape[0]:
+                print(f"[ERROR] Niezgodność wymiarów dla {name}: A.shape = {A.shape}, B.shape = {B.shape}")
+                continue
 
-def apply_lora_updates(model_obj: torch.nn.Module, lora_state_dict: dict, scale: float = 1.0) -> list:
-    """
-    Dla każdego klucza w lora_state_dict, jeśli kończy się na '.lora_A.weight',
-    oblicza odpowiadający update = B @ A (gdzie B ma klucz z końcówką '.lora_B.weight')
-    i dodaje update do oryginalnych wag z kluczem bazowym (bez sufiksu).
-    Zwraca listę kluczy bazowych, które zostały zmodyfikowane.
-    """
-    updated = []
-    state_dict = model_obj.state_dict()
-    for key in list(lora_state_dict.keys()):
-        if key.endswith(".lora_A.weight"):
-            base_key = key[:-len(".lora_A.weight")]
-            key_B = base_key + ".lora_B.weight"
-            if key_B in lora_state_dict and base_key in state_dict:
-                A = lora_state_dict[key]
-                B = lora_state_dict[key_B]
-                update = torch.matmul(B, A) * scale
-                print(f"[~] Aktualizuję {base_key} przy użyciu {key} i {key_B}")
-                state_dict[base_key] = state_dict[base_key] + update.to(state_dict[base_key].device)
-                updated.append(base_key)
-    model_obj.load_state_dict(state_dict)
-    return updated
-
-
-def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
-    """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face, mapuje klucze
-    (usuwa prefiksy "transformer.single_" oraz "transformer.") i aplikuje LoRA update
-    do submodelu 'transformer' (lub 'unet').
-    """
-    if not lora_filename:
-        try:
-            file_list = list_repo_files(repo_id=lora_repo_id, revision="main")
-            safetensors_files = [f for f in file_list if f.lower().endswith(".safetensors")]
-            if safetensors_files:
-                lora_filename = safetensors_files[0]
-                print(f"[~] Znaleziono plik safetensors: {lora_filename}")
+            update = scaling_factor * (B @ A)
+            if update.shape == param.data.shape:
+                old_sum = param.data.sum().item()
+                param.data.add_(update)
+                new_sum = param.data.sum().item()
+                print(f"[INFO] Zaktualizowano {name}: suma wag zmieniła się z {old_sum:.4f} na {new_sum:.4f}")
+                modified = True
             else:
-                lora_filename = "pytorch_model.bin"
-                print("[~] Nie znaleziono pliku safetensors, używam 'pytorch_model.bin'")
-        except Exception as e:
-            print(f"[ERROR] Nie udało się pobrać listy plików z repozytorium: {e}. Używam 'pytorch_model.bin'")
-            lora_filename = "pytorch_model.bin"
-    
-    if lora_filename.lower().endswith(".safetensors"):
-        try:
-            print(f"[~] Próba pobrania {lora_filename}...")
-            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename, revision="main")
-            from safetensors.torch import load_file as safe_load
-            lora_state_dict = safe_load(lora_weights_path)
-        except Exception as e:
-            print(f"[ERROR] Nie udało się pobrać pliku safetensors: {e}")
-            raise
-    else:
-        try:
-            print(f"[~] Próba pobrania {lora_filename}...")
-            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename, revision="main")
-            lora_state_dict = torch.load(lora_weights_path, map_location="cpu")
-        except Exception as e:
-            print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
-            raise
+                print(f"[WARNING] Pomijam {name}: update.shape = {update.shape} != param.shape = {param.data.shape}")
+    if not modified:
+        print("[WARNING] Żaden parametr nie został zmodyfikowany!")
+    return model
 
-    print_pipeline_structure(pipe)
-    print("[DEBUG] Klucze w LoRA weights:", list(lora_state_dict.keys()))
-    # Mapujemy klucze: usuwamy "transformer.single_" i "transformer." 
-    mapped_lora_state_dict = {
-        key.replace("transformer.single_", "").replace("transformer.", ""): value
-        for key, value in lora_state_dict.items()
-    }
-    print("[DEBUG] Klucze po mapowaniu:", list(mapped_lora_state_dict.keys()))
-    
-    # Wybieramy submodel: najpierw "transformer", jeśli nie, "unet"
-    if hasattr(pipe, "transformer"):
-        model_attr = pipe.transformer
-        print("[~] Używam atrybutu 'transformer' do aplikacji wag.")
-    elif hasattr(pipe, "unet"):
-        model_attr = pipe.unet
-        print("[~] Używam atrybutu 'unet' do aplikacji wag.")
-    else:
-        raise AttributeError("Nie udało się znaleźć właściwego submodelu (transformer lub unet) w pipeline.")
-    
-    print("[DEBUG] Klucze parametrów modelu:")
-    for name, _ in model_attr.named_parameters():
-        print(f"  {name}")
-    
-    updated_keys = apply_lora_updates(model_attr, mapped_lora_state_dict, scale=1.0)
-    if not updated_keys:
-        print("[WARNING] Żaden parametr nie został zmodyfikowany.")
-    else:
-        print(f"[~] Zmodyfikowano parametry: {updated_keys}")
-    return pipe
+if __name__ == '__main__':
+    # Ładowanie pipeline – przykładowo przy użyciu FluxInpaintPipeline
+    try:
+        from diffusers import FluxInpaintPipeline
+        pipeline = FluxInpaintPipeline.from_pretrained("ścieżka/do/twojego/modelu")
+    except Exception as e:
+        print("Błąd przy ładowaniu modelu:", e)
+        exit(1)
 
-class Predictor(BasePredictor):
-    def setup(self) -> None:
-        print(f"[~] Model type: {MODEL_TYPE}")
-        if not os.path.exists(MODEL_CACHE):
-            os.makedirs(MODEL_CACHE)
-        model_files = [f"models--black-forest-labs--FLUX.1-{MODEL_TYPE}.tar"]
-        for model_file in model_files:
-            url = BASE_URL + model_file
-            filename = url.split("/")[-1]
-            dest_path = os.path.join(MODEL_CACHE, filename)
-            if not os.path.exists(dest_path.replace(".tar", "")):
-                download_weights(url, dest_path)
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.pipe = FluxInpaintPipeline.from_pretrained(
-            f"black-forest-labs/FLUX.1-{MODEL_TYPE}",
-            torch_dtype=torch.bfloat16,
-            cache_dir=MODEL_CACHE,
-            local_files_only=True,
-        ).to(self.device)
-        print_pipeline_structure(self.pipe)
+    # Wypisanie struktury pipeline dla debugowania
+    print_pipeline_structure(pipeline)
 
-    def predict(
-        self,
-        image: Path = Input(description="Input image for inpainting"),
-        mask: Path = Input(description="Mask image"),
-        prompt: str = Input(description="Text prompt for inpainting"),
-        strength: float = Input(
-            description="Strength of inpainting. Higher values allow for more deviation from the original image.",
-            default=0.85,
-            ge=0,
-            le=1,
-        ),
-        num_inference_steps: int = Input(
-            description="Number of denoising steps. More steps usually lead to a higher quality image at the expense of slower inference.",
-            default=30,
-            ge=1,
-            le=50,
-        ),
-        guidance_scale: float = Input(
-            description="Guidance scale as defined in Classifier-Free Diffusion Guidance. Higher guidance scale encourages images that are closely linked to the text prompt, usually at the expense of lower image quality.",
-            default=7.0,
-            ge=1.0,
-            le=20.0,
-        ),
-        height: int = Input(
-            description="Height of the output image. Will be rounded to the nearest multiple of 8.",
-            default=1024,
-            ge=128,
-            le=2048,
-        ),
-        width: int = Input(
-            description="Width of the output image. Will be rounded to the nearest multiple of 8.",
-            default=1024,
-            ge=128,
-            le=2048,
-        ),
-        num_outputs: int = Input(
-            description="Number of images to generate per prompt. Batch size is set to 1",
-            default=1,
-            ge=1,
-            le=8,
-        ),
-        seed: int = Input(
-            description="Random seed. Leave blank to randomize the seed", default=None
-        ),
-        output_format: str = Input(
-            description="Format of the output image",
-            choices=["webp", "jpg", "png"],
-            default="webp",
-        ),
-        output_quality: int = Input(
-            description="Quality of the output image, from 0 to 100. 100 is best quality, 0 is lowest quality.",
-            default=80,
-            ge=0,
-            le=100,
-        ),
-        lora_hf_link: str = Input(
-            description="Link to HuggingFace repository containing LoRA weights (e.g. 'username/model'). Leave blank if not used.",
-            default="",
-        ),
-    ) -> Iterator[Path]:
-        if not prompt:
-            raise ValueError("Please enter a text prompt.")
-        if seed is None:
-            seed = int.from_bytes(os.urandom(4), "big")
-        print(f"[~] Using seed: {seed}")
-        height = (height + 7) // 8 * 8
-        width = (width + 7) // 8 * 8
-        input_image = Image.open(image).convert("RGB")
-        mask_image = Image.open(mask).convert("RGB")
-        if lora_hf_link.strip():
-            print(f"[~] Loading LoRA weights from: {lora_hf_link}")
-            self.pipe = load_lora_weights(self.pipe, lora_repo_id=lora_hf_link)
-        for i in range(num_outputs):
-            generator = torch.Generator(device=self.device).manual_seed(seed + i)
-            result = self.pipe(
-                prompt=prompt,
-                image=input_image,
-                mask_image=mask_image,
-                height=height,
-                width=width,
-                strength=strength,
-                generator=generator,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-            ).images[0]
-            extension = output_format.lower()
-            extension = "jpeg" if extension == "jpg" else extension
-            output_path = f"/tmp/output_{i}.{extension}"
-            print(f"[~] Saving to {output_path}...")
-            print(f"[~] Output format: {extension.upper()}")
-            if output_format != "png":
-                print(f"[~] Output quality: {output_quality}")
-            save_params = {"format": extension.upper()}
-            if output_format != "png":
-                save_params["quality"] = output_quality
-                save_params["optimize"] = True
-            result.save(output_path, **save_params)
-            yield Path(output_path)
+    # Ładowanie wag LoRA z pliku safetensors
+    try:
+        lora_state_dict = load_file("prezes.safetensors")
+    except Exception as e:
+        print("Błąd przy ładowaniu wag LoRA:", e)
+        exit(1)
+
+    # Sprawdzamy, czy pipeline ma atrybut 'transformer'
+    if not hasattr(pipeline, "transformer"):
+        print("Pipeline nie posiada atrybutu 'transformer'. Upewnij się, że ładujesz właściwy model.")
+        exit(1)
+    
+    # (Opcjonalnie) Zapisujemy oryginalny stan wag części 'transformer' do porównania
+    original_transformer_state = {k: v.clone() for k, v in pipeline.transformer.named_parameters()}
+    
+    # Zastosowanie wag LoRA do części 'transformer' w pipeline
+    pipeline.transformer = apply_lora_to_model(pipeline.transformer, lora_state_dict, scaling_factor=1.0)
+
+    # (Opcjonalnie) Sprawdzenie, czy wagi uległy zmianie
+    for name, param in pipeline.transformer.named_parameters():
+        if name in original_transformer_state:
+            diff = (param.data - original_transformer_state[name]).abs().sum().item()
+            if diff > 0:
+                print(f"[DEBUG] {name} został zmodyfikowany: suma różnic = {diff:.4f}")
+
+    # Generowanie obrazu – przykładowy prompt (upewnij się, że długość promptu mieści się w ograniczeniach modelu)
+    prompt = "A high quality photorealistic image of a cat sitting on a metallic surface, adding a sense of action and tension."
+    
+    # Jeśli używasz CLIPTextModel, pamiętaj o ograniczeniu długości sekwencji (np. do 77 tokenów)
+    outputs = pipeline(prompt)
+    
+    # Zakładamy, że pipeline zwraca listę obrazów – zapisujemy pierwszy z nich
+    output_image = outputs[0]
+    output_path = "/tmp/output_0.webp"
+    output_image.save(output_path, "WEBP", quality=80)
+    print(f"[INFO] Obraz zapisany do {output_path}")
