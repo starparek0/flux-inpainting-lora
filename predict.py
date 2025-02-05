@@ -73,7 +73,7 @@ def print_pipeline_structure(pipe) -> None:
 def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
     """
     Próbuje zastosować LoRA weights do wszystkich modułów znalezionych w pipeline.
-    Zwraca listę zmodyfikowanych kluczy.
+    Zwraca listę zmodyfikowanych nazw.
     """
     updated = []
     if hasattr(pipe, "named_parameters"):
@@ -83,7 +83,6 @@ def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
                 param.data += lora_state_dict[name]
                 updated.append(name)
     else:
-        # Iterujemy po submodule'ach znalezionych w atrybutach pipeline
         for module in pipe.modules():
             for name, param in module.named_parameters(recurse=False):
                 full_name = f"{module.__class__.__name__}.{name}"
@@ -96,10 +95,11 @@ def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów pipeline.
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów modelu.
     Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
-    zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors" (bez względu na nazwę).
+    Jeśli taki plik zostanie znaleziony, zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
+    Następnie stosuje LoRA weights globalnie do wszystkich parametrów modelu.
     """
     if not lora_filename:
         try:
@@ -133,10 +133,8 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    # Debug – wypisanie struktury pipeline
     print_pipeline_structure(pipe)
     
-    # Próba zaaplikowania LoRA weights "globalnie" – iterujemy po wszystkich modułach pipeline
     updated_keys = apply_lora_to_pipeline(pipe, lora_state_dict)
     if not updated_keys:
         print("[WARNING] Żaden parametr nie został zmodyfikowany.")
