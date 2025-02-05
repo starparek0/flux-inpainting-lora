@@ -11,7 +11,7 @@ from PIL import Image
 from typing import Iterator
 from diffusers import FluxInpaintPipeline
 from cog import BasePredictor, Input, Path
-from huggingface_hub import hf_hub_download, list_repo_files  # Używamy list_repo_files
+from huggingface_hub import hf_hub_download, list_repo_files
 
 # Dodajemy typ MIME dla .webp
 mimetypes.add_type("image/webp", ".webp")
@@ -46,10 +46,8 @@ def download_weights(url: str, dest: str) -> None:
 
 def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> None:
     """
-    Iteruje po parametrach modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
-    dodaje (sumuje) wagi LoRA do istniejących wag.
-    
-    UWAGA: To uproszczony przykład – w praktyce integracja wag LoRA może wymagać dodatkowych operacji.
+    Iteruje po parametrach modułu i, jeśli state_dict zawiera odpowiadający klucz,
+    dodaje (sumuje) wartości z LoRA do istniejących wag.
     """
     for name, param in module.named_parameters():
         if name in lora_state_dict:
@@ -57,25 +55,41 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> None:
             param.data += lora_state_dict[name]
 
 
+def get_all_submodules(obj) -> list:
+    """
+    Przeszukuje atrybuty obiektu obj i zwraca listę tych, które są instancjami torch.nn.Module.
+    """
+    modules = []
+    for attr in dir(obj):
+        try:
+            candidate = getattr(obj, attr)
+        except Exception:
+            continue
+        if isinstance(candidate, torch.nn.Module):
+            modules.append(candidate)
+    return modules
+
+
 def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
     """
-    Próbuje iterować po wszystkich parametrach pipeline (lub jego podmodułów) i modyfikuje te,
-    których nazwy pasują do kluczy w lora_state_dict.
-    Zwraca listę zmodyfikowanych kluczy.
+    Próbuje zastosować LoRA weights do wszystkich modułów znalezionych w pipeline.
+    Jeśli pipeline nie jest bezpośrednio nn.Module, iteruje po atrybutach, szukając instancji nn.Module.
+    Zwraca listę zaktualizowanych nazw.
     """
     updated = []
-    if hasattr(pipe, "named_parameters"):
+    # Jeśli pipeline jest nn.Module, używamy jego named_parameters()
+    if isinstance(pipe, torch.nn.Module):
         for name, param in pipe.named_parameters():
             if name in lora_state_dict:
                 print(f"[~] Modyfikacja parametru: {name}")
                 param.data += lora_state_dict[name]
                 updated.append(name)
     else:
-        # Jeśli pipeline nie jest nn.Module, iterujemy po modułach
-        for module in pipe.modules():
-            for name, param in module.named_parameters(recurse=False):
-                # Budujemy "pełną" nazwę – możesz ją dostosować, jeśli jest taka potrzeba
-                full_name = f"{module.__class__.__name__}.{name}"
+        # Iterujemy po submodule'ach znalezionych w atrybutach pipeline
+        modules = get_all_submodules(pipe)
+        for mod in modules:
+            for name, param in mod.named_parameters(recurse=False):
+                full_name = f"{mod.__class__.__name__}.{name}"
                 if full_name in lora_state_dict:
                     print(f"[~] Modyfikacja parametru: {full_name}")
                     param.data += lora_state_dict[full_name]
@@ -85,12 +99,10 @@ def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i "wstrzykuje" je do parametrów pipeline,
-    iterując po wszystkich parametrach.
-    
-    Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
-    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
-    zostanie użyty; w przeciwnym razie pobierze "pytorch_model.bin".
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów pipeline,
+    iterując po wszystkich modułach znalezionych w pipeline.
+    Jeśli lora_filename nie jest podany, funkcja szuka dowolnego pliku z rozszerzeniem ".safetensors" (gałąź "main").
+    Jeśli taki plik nie zostanie znaleziony, używa "pytorch_model.bin".
     """
     if not lora_filename:
         try:
@@ -124,7 +136,7 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    print("[~] Aktualny model – iteracja po parametrach:")
+    print("[~] Próbuję zaaplikować LoRA weights do parametrów pipeline...")
     updated_keys = apply_lora_to_pipeline(pipe, lora_state_dict)
     if not updated_keys:
         print("[WARNING] Żaden parametr nie został zmodyfikowany.")
