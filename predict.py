@@ -11,15 +11,14 @@ from PIL import Image
 from typing import Tuple, Iterator
 from diffusers import FluxInpaintPipeline
 from cog import BasePredictor, Input, Path
-from huggingface_hub import hf_hub_download  # Nowy import potrzebny do pobierania wag
+from huggingface_hub import hf_hub_download, hf_hub_list  # Importujemy również funkcję listującą pliki
 
+# Dodajemy typ MIME dla .webp
 mimetypes.add_type("image/webp", ".webp")
 
-MODEL_TYPE = "dev"  # "schnell" or "dev"
+MODEL_TYPE = "dev"  # "schnell" lub "dev"
 MODEL_CACHE = "checkpoints"
-BASE_URL = (
-    f"https://weights.replicate.delivery/default/flux-1-inpainting/{MODEL_CACHE}/"
-)
+BASE_URL = f"https://weights.replicate.delivery/default/flux-1-inpainting/{MODEL_CACHE}/"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_HOME"] = MODEL_CACHE
@@ -31,8 +30,8 @@ os.environ["HUGGINGFACE_HUB_CACHE"] = MODEL_CACHE
 
 def download_weights(url: str, dest: str) -> None:
     start = time.time()
-    print("[!] Initiating download from URL: ", url)
-    print("[~] Destination path: ", dest)
+    print("[!] Initiating download from URL:", url)
+    print("[~] Destination path:", dest)
     if ".tar" in dest:
         dest = os.path.dirname(dest)
     command = ["pget", "-vf" + ("x" if ".tar" in url else ""), url, dest]
@@ -40,20 +39,18 @@ def download_weights(url: str, dest: str) -> None:
         print(f"[~] Running command: {' '.join(command)}")
         subprocess.check_call(command, close_fds=False)
     except subprocess.CalledProcessError as e:
-        print(
-            f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}."
-        )
+        print(f"[ERROR] Failed to download weights. Command '{' '.join(e.cmd)}' returned non-zero exit status {e.returncode}.")
         raise
-    print("[+] Download completed in: ", time.time() - start, "seconds")
+    print("[+] Download completed in:", time.time() - start, "seconds")
 
 
 def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.nn.Module:
     """
-    Przechodzi po parametrach danego modułu i – jeśli w słowniku wag LoRA znajduje się
-    odpowiadający klucz – dodaje (sumuje) wagi LoRA do oryginalnych wag.
+    Iteruje po parametrach danego modułu i, jeśli w state_dict znajduje się odpowiadający klucz,
+    dodaje (sumuje) wagi LoRA do istniejących wag.
     
-    UWAGA: To bardzo uproszczony przykład. W rzeczywistości integracja wag LoRA
-    może wymagać dodatkowych operacji, np. skalowania.
+    UWAGA: To bardzo uproszczony przykład. W zależności od implementacji LoRA,
+    integracja wag może wymagać dodatkowych operacji (np. skalowania).
     """
     for name, param in module.named_parameters():
         if name in lora_state_dict:
@@ -61,19 +58,48 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> torch.
     return module
 
 
-def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = "pytorch_model.bin"):
+def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
     Pobiera plik z wagami LoRA z repozytorium Hugging Face i aplikuje je do modelu.
-    W tym przykładzie iterujemy po modułach UNet (FluxInpaintPipeline zakłada podobną strukturę jak SD)
-    i modyfikujemy wagi.
+    Jeśli lora_filename nie jest podany, funkcja najpierw przeszuka repozytorium (gałąź "main")
+    w poszukiwaniu pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony, zostanie użyty;
+    w przeciwnym wypadku zostanie użyty "pytorch_model.bin".
     """
-    print("[~] Pobieranie wag LoRA z repozytorium:", lora_repo_id)
-    lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
-    lora_state_dict = torch.load(lora_weights_path, map_location="cpu")
+    # Jeśli nie podano nazwy pliku, przeszukujemy repozytorium
+    if not lora_filename:
+        try:
+            file_list = hf_hub_list(repo_id=lora_repo_id, revision="main")
+            safetensors_files = [f for f in file_list if f.endswith(".safetensors")]
+            if safetensors_files:
+                lora_filename = safetensors_files[0]
+                print(f"[~] Znaleziono plik safetensors: {lora_filename}")
+            else:
+                lora_filename = "pytorch_model.bin"
+                print("[~] Nie znaleziono pliku safetensors, używam domyślnego 'pytorch_model.bin'")
+        except Exception as e:
+            print(f"[ERROR] Nie udało się pobrać listy plików z repozytorium: {e}. Używam 'pytorch_model.bin'")
+            lora_filename = "pytorch_model.bin"
     
+    # Ładowanie wag w zależności od rozszerzenia pliku
+    if lora_filename.endswith(".safetensors"):
+        try:
+            print(f"[~] Próba pobrania {lora_filename}...")
+            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
+            from safetensors.torch import load_file as safe_load
+            lora_state_dict = safe_load(lora_weights_path)
+        except Exception as e:
+            print(f"[ERROR] Nie udało się pobrać pliku safetensors: {e}")
+            raise
+    else:
+        try:
+            print(f"[~] Próba pobrania {lora_filename}...")
+            lora_weights_path = hf_hub_download(repo_id=lora_repo_id, filename=lora_filename)
+            lora_state_dict = torch.load(lora_weights_path, map_location="cpu")
+        except Exception as e:
+            print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
+            raise
     for module in pipe.unet.modules():
         apply_lora_weights(module, lora_state_dict)
-    
     print("[~] Wagi LoRA zostały załadowane i zaaplikowane.")
     return pipe
 
@@ -155,7 +181,6 @@ class Predictor(BasePredictor):
             ge=0,
             le=100,
         ),
-        # Nowe pole – link do repozytorium na HuggingFace z wagami LoRA
         lora_hf_link: str = Input(
             description="Link to HuggingFace repository containing LoRA weights (e.g. 'username/model'). Leave blank if not used.",
             default="",
@@ -168,7 +193,7 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(4), "big")
         print(f"[~] Using seed: {seed}")
 
-        # Ensure height and width are divisible by 8
+        # Upewnij się, że wysokość i szerokość są wielokrotnością 8
         height = (height + 7) // 8 * 8
         width = (width + 7) // 8 * 8
 
@@ -176,15 +201,14 @@ class Predictor(BasePredictor):
         input_image = Image.open(image).convert("RGB")
         mask_image = Image.open(mask).convert("RGB")
 
-        # Jeśli użytkownik podał link do repozytorium z wagami LoRA, wczytujemy je
+        # Jeśli użytkownik podał link do repozytorium z wagami LoRA, ładujemy je.
         if lora_hf_link.strip():
             print(f"[~] Loading LoRA weights from: {lora_hf_link}")
-            self.pipe = load_lora_weights(self.pipe, lora_repo_id=lora_hf_link, lora_filename="pytorch_model.bin")
+            self.pipe = load_lora_weights(self.pipe, lora_repo_id=lora_hf_link)
 
-        # Generate images
+        # Generowanie obrazów
         for i in range(num_outputs):
             generator = torch.Generator(device=self.device).manual_seed(seed + i)
-
             result = self.pipe(
                 prompt=prompt,
                 image=input_image,
@@ -197,7 +221,7 @@ class Predictor(BasePredictor):
                 guidance_scale=guidance_scale,
             ).images[0]  # Generujemy jeden obraz na iterację
 
-            # Save the result
+            # Zapisujemy wynik
             extension = output_format.lower()
             extension = "jpeg" if extension == "jpg" else extension
             output_path = f"/tmp/output_{i}.{extension}"
