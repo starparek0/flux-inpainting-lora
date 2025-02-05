@@ -55,30 +55,28 @@ def apply_lora_weights(module: torch.nn.Module, lora_state_dict: dict) -> None:
             param.data += lora_state_dict[name]
 
 
-def get_all_submodules(obj) -> list:
+def print_pipeline_structure(pipe) -> None:
     """
-    Przeszukuje atrybuty obiektu obj i zwraca listę tych, które są instancjami torch.nn.Module.
+    Wypisuje dostępne atrybuty pipeline oraz te, które są instancjami torch.nn.Module.
     """
-    modules = []
-    for attr in dir(obj):
+    print("[DEBUG] Struktura pipeline:")
+    for attr in dir(pipe):
         try:
-            candidate = getattr(obj, attr)
+            candidate = getattr(pipe, attr)
         except Exception:
             continue
         if isinstance(candidate, torch.nn.Module):
-            modules.append(candidate)
-    return modules
+            print(f"  Atrybut: {attr} -> {candidate.__class__.__name__}")
+    print("[DEBUG] Koniec struktury pipeline.")
 
 
 def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
     """
     Próbuje zastosować LoRA weights do wszystkich modułów znalezionych w pipeline.
-    Jeśli pipeline nie jest bezpośrednio nn.Module, iteruje po atrybutach, szukając instancji nn.Module.
-    Zwraca listę zaktualizowanych nazw.
+    Zwraca listę zmodyfikowanych kluczy.
     """
     updated = []
-    # Jeśli pipeline jest nn.Module, używamy jego named_parameters()
-    if isinstance(pipe, torch.nn.Module):
+    if hasattr(pipe, "named_parameters"):
         for name, param in pipe.named_parameters():
             if name in lora_state_dict:
                 print(f"[~] Modyfikacja parametru: {name}")
@@ -86,10 +84,9 @@ def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
                 updated.append(name)
     else:
         # Iterujemy po submodule'ach znalezionych w atrybutach pipeline
-        modules = get_all_submodules(pipe)
-        for mod in modules:
-            for name, param in mod.named_parameters(recurse=False):
-                full_name = f"{mod.__class__.__name__}.{name}"
+        for module in pipe.modules():
+            for name, param in module.named_parameters(recurse=False):
+                full_name = f"{module.__class__.__name__}.{name}"
                 if full_name in lora_state_dict:
                     print(f"[~] Modyfikacja parametru: {full_name}")
                     param.data += lora_state_dict[full_name]
@@ -99,10 +96,10 @@ def apply_lora_to_pipeline(pipe, lora_state_dict: dict) -> list:
 
 def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
     """
-    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów pipeline,
-    iterując po wszystkich modułach znalezionych w pipeline.
-    Jeśli lora_filename nie jest podany, funkcja szuka dowolnego pliku z rozszerzeniem ".safetensors" (gałąź "main").
-    Jeśli taki plik nie zostanie znaleziony, używa "pytorch_model.bin".
+    Pobiera plik z wagami LoRA z repozytorium Hugging Face i wstrzykuje je do parametrów pipeline.
+    Jeśli lora_filename nie jest podany, funkcja przeszukuje repozytorium (gałąź "main")
+    w poszukiwaniu dowolnego pliku z rozszerzeniem ".safetensors". Jeśli taki plik zostanie znaleziony,
+    zostanie użyty; w przeciwnym wypadku pobierze "pytorch_model.bin".
     """
     if not lora_filename:
         try:
@@ -136,7 +133,10 @@ def load_lora_weights(pipe, lora_repo_id: str, lora_filename: str = None):
             print(f"[ERROR] Nie udało się pobrać pliku .bin: {e}")
             raise
 
-    print("[~] Próbuję zaaplikować LoRA weights do parametrów pipeline...")
+    # Debug – wypisanie struktury pipeline
+    print_pipeline_structure(pipe)
+    
+    # Próba zaaplikowania LoRA weights "globalnie" – iterujemy po wszystkich modułach pipeline
     updated_keys = apply_lora_to_pipeline(pipe, lora_state_dict)
     if not updated_keys:
         print("[WARNING] Żaden parametr nie został zmodyfikowany.")
