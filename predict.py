@@ -10,34 +10,29 @@ from diffusers import StableDiffusionInpaintPipeline
 # =============================================================================
 def load_lora_weights(pipe, lora_model: str, lora_strength: float):
     print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-    # Example (dummy): In your implementation, download the safetensors file from Hugging Face
-    # and apply the weights to the pipeline’s underlying model.
-    #
-    # Example pseudocode:
-    #   state_dict = load_safetensors(lora_model)  # your function to load the weights
-    #   pipe.unet = apply_lora(pipe.unet, state_dict, strength=lora_strength)
-    #
-    # For now, we simply return the unchanged pipeline.
+    # TODO: Replace this dummy code with your actual implementation.
+    # For example:
+    #   state_dict = load_safetensors(lora_model)
+    #   pipe = apply_lora_to_pipeline(pipe, state_dict, strength=lora_strength)
     return pipe
 
 # =============================================================================
 # This function loads the input images, resizes them to the desired output size,
-# sets up the inpainting pipeline, applies the LoRA weights, and finally runs the
+# sets up the inpainting pipeline, applies the LoRA weights, and runs the
 # pipeline to generate an output image using the given prompt.
 # =============================================================================
 def generate_image(base_img, mask_img, lora_model, prompt, lora_strength, prompt_strength, height, width, seed):
     # Set the seed for reproducibility
     torch.manual_seed(seed)
     
-    # Resize base image and mask to the output dimensions
+    # Resize the base image and mask to the desired output dimensions
     base_img = base_img.resize((width, height))
     mask_img = mask_img.resize((width, height))
     
     # Load the inpainting pipeline.
-    # (Here we use the stable-diffusion-inpainting model from RunwayML.)
+    # NOTE: We removed the 'revision="fp16"' parameter because it was causing errors.
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         "runwayml/stable-diffusion-inpainting",
-        revision="fp16",
         torch_dtype=torch.float16
     )
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -46,13 +41,13 @@ def generate_image(base_img, mask_img, lora_model, prompt, lora_strength, prompt
     # Apply LoRA weights (replace the dummy implementation with your actual code)
     pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
-    print(f"Generating image using prompt: '{prompt}'")
+    print(f"Generating image using prompt: '{prompt}' with guidance scale {prompt_strength}")
     
-    # Run the inpainting pipeline. The model uses:
+    # Run the inpainting pipeline. The pipeline uses:
     #  - base_img as the starting image,
-    #  - mask_img to determine which areas to modify (white areas will be inpainted),
+    #  - mask_img to specify where to generate new content (white indicates areas to inpaint),
     #  - prompt to guide the generation,
-    #  - guidance_scale (here prompt_strength) controls how strongly the prompt is followed.
+    #  - guidance_scale (here prompt_strength) to control how strongly the prompt is followed.
     output = pipe(
         prompt=prompt,
         image=base_img,
@@ -61,7 +56,7 @@ def generate_image(base_img, mask_img, lora_model, prompt, lora_strength, prompt
         guidance_scale=prompt_strength
     )
     
-    # Return the generated image (first image from the pipeline's output list)
+    # Return the first generated image from the pipeline's output list.
     return output.images[0]
 
 # =============================================================================
@@ -69,7 +64,7 @@ def generate_image(base_img, mask_img, lora_model, prompt, lora_strength, prompt
 # =============================================================================
 class Predictor(BasePredictor):
     def setup(self):
-        # Any one-time model setup can be performed here.
+        # One-time setup can be performed here.
         print("Model setup complete.")
     
     def predict(
@@ -78,11 +73,11 @@ class Predictor(BasePredictor):
             description="Upload your base image (RGB)."
         ),
         mask_image: Path = Input(
-            description="Upload your mask image (RGB). White areas will be inpainted with new content."
+            description="Upload your mask image (RGB). White areas will be inpainted."
         ),
         lora_model: str = Input(
-            description="Hugging Face LoRA model ID (e.g. shimopol/prezes)",
-            default="shimopol/prezes"
+            description="Hugging Face LoRA model ID (e.g. shimopol/jarek)",
+            default="shimopol/jarek"
         ),
         prompt: str = Input(
             description="Text prompt to guide the inpainting",
@@ -93,7 +88,7 @@ class Predictor(BasePredictor):
             default=1.0
         ),
         prompt_strength: float = Input(
-            description="Guidance scale for the prompt (e.g. higher means stronger adherence to prompt)",
+            description="Guidance scale for the prompt (e.g., higher means stronger adherence)",
             default=7.5
         ),
         height: int = Input(
@@ -109,14 +104,14 @@ class Predictor(BasePredictor):
             default=42
         )
     ) -> Path:
-        # Load and convert the input images
+        # Open the base and mask images and convert them to RGB
         base_img = Image.open(base_image).convert("RGB")
         mask_img = Image.open(mask_image).convert("RGB")
         
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model {lora_model} with strength {lora_strength}")
         
-        # Generate the output image using the provided parameters.
+        # Generate the output image
         output_img = generate_image(
             base_img,
             mask_img,
@@ -129,7 +124,7 @@ class Predictor(BasePredictor):
             seed
         )
         
-        # Save the generated image (using WEBP format)
+        # Save the generated image to a temporary file in WEBP format
         output_path = "/tmp/output_0.webp"
         output_img.save(output_path, "WEBP")
         print(f"Output image saved to {output_path}")
