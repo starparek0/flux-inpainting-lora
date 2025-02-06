@@ -4,14 +4,13 @@ import torch
 from diffusers import FluxInpaintPipeline
 
 # ------------------------------------------------------------------------------
-# Replace this placeholder with your own code to load and apply LoRA weights.
-# It should take the pipeline, the LoRA model id, and the desired strength,
-# and then modify the pipeline accordingly.
+# This function is a placeholder for applying LoRA weights.
+# Replace its implementation with your actual logic for loading and merging
+# LoRA weights into your pipeline.
 # ------------------------------------------------------------------------------
 def load_lora_weights(pipe, lora_model: str, lora_strength: float):
     print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-    # TODO: Implement actual logic to load the .safetensors from the given LoRA model
-    # and apply its weights to the pipeline.
+    # TODO: Add your implementation for loading the LoRA safetensors and applying them.
     return pipe
 
 # ------------------------------------------------------------------------------
@@ -35,27 +34,25 @@ def generate_image(
     base_img = base_img.resize((width, height))
     mask_img = mask_img.resize((width, height))
     
-    # Specify the model id or absolute path of your Flux inpainting model.
-    # For a Hugging Face model, use its repo id (e.g., "flux/flux-inpainting").
-    # If your model is already cached locally and outgoing traffic is disabled,
-    # ensure that the model has been downloaded previously.
-    model_id = "flux/flux-inpainting"
+    # Specify the model id. If you are using Flux 1 dev, adjust the id accordingly.
+    # For example, if the correct repository is "flux/flux-inpainting-dev", change it here.
+    model_id = "flux/flux-inpainting"  # Adjust this if needed.
     
     # Load the Flux inpainting pipeline.
-    # Note: local_files_only is set to False here so that the model can be fetched
-    # if not already cached. If your environment disallows outgoing traffic,
-    # set this parameter to True and ensure the model is cached locally.
+    # Note: We pass `use_auth_token=True` so that if the model is private/gated,
+    # authentication (e.g. via HF_HUB_TOKEN) is used.
     pipe = FluxInpaintPipeline.from_pretrained(
         model_id,
         local_files_only=False,
-        torch_dtype=torch.float16
+        torch_dtype=torch.float16,
+        use_auth_token=True
     )
     
     # Move the pipeline to GPU if available
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
     
-    # Apply LoRA weights to the pipeline (your implementation must replace the placeholder)
+    # Apply LoRA weights to the pipeline (this function must be implemented)
     pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
     print(f"Generating image using prompt: '{prompt}' with guidance scale {prompt_strength}")
@@ -77,7 +74,7 @@ def generate_image(
 # ------------------------------------------------------------------------------
 class Predictor(BasePredictor):
     def setup(self):
-        # Perform one-time setup if needed.
+        # One-time setup if needed.
         print("Flux inpainting model setup complete.")
     
     def predict(
