@@ -1,7 +1,6 @@
 from cog import BasePredictor, Input, Path
 from PIL import Image
 import torch
-# Import the Flux inpainting pipeline from diffusers
 from diffusers import FluxInpaintPipeline
 
 # =============================================================================
@@ -11,14 +10,11 @@ from diffusers import FluxInpaintPipeline
 # =============================================================================
 def load_lora_weights(pipe, lora_model: str, lora_strength: float):
     print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-    # TODO: Add your code to load the LoRA state_dict from lora_model and apply it
-    # to the Flux pipeline. For example:
-    #   state_dict = load_safetensors(lora_model)
-    #   pipe = apply_lora_to_flux_pipeline(pipe, state_dict, strength=lora_strength)
+    # TODO: Add your code here to load the LoRA state dict and integrate it into the pipeline.
     return pipe
 
 # =============================================================================
-# Generate an inpainted image using a Flux-based inpainting pipeline.
+# Generate an inpainted image using a Flux‑based inpainting pipeline.
 # =============================================================================
 def generate_image(
     base_img: Image.Image,
@@ -34,27 +30,32 @@ def generate_image(
     # Set the random seed for reproducibility
     torch.manual_seed(seed)
     
-    # Resize the base image and mask to the output dimensions
+    # Resize the base image and mask to the desired output dimensions
     base_img = base_img.resize((width, height))
     mask_img = mask_img.resize((width, height))
     
-    # IMPORTANT:
-    # Instead of loading the Flux model from the Hub (which may fail),
-    # load it from a local directory where you have placed the Flux inpainting model.
-    # For example, download the model files and place them in "./flux-inpainting".
+    # Specify the local folder containing the Flux‑inpainting model files.
+    # Make sure that the folder "flux-inpainting" exists in your working directory,
+    # or change this to an absolute path.
+    model_path = "flux-inpainting"  # no "./" prefix
+    
+    # Load the Flux inpainting pipeline from the local folder
     pipe = FluxInpaintPipeline.from_pretrained(
-        "./flux-inpainting",  # Change this path as needed
+        model_path,
+        local_files_only=True,    # Ensures the model is loaded from disk
         torch_dtype=torch.float16
     )
+    
+    # Move the pipeline to the available device (GPU if available)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
     
-    # Apply LoRA weights to the pipeline
+    # Apply LoRA weights (your implementation must replace the placeholder)
     pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
     print(f"Generating image using prompt: '{prompt}' with guidance scale {prompt_strength}")
     
-    # Run the inpainting pipeline.
+    # Run the inpainting pipeline
     output = pipe(
         prompt=prompt,
         image=base_img,
@@ -111,14 +112,14 @@ class Predictor(BasePredictor):
             default=42
         )
     ) -> Path:
-        # Open the base and mask images and ensure they are in RGB
+        # Open the base and mask images and ensure they are in RGB mode
         base_img = Image.open(base_image).convert("RGB")
         mask_img = Image.open(mask_image).convert("RGB")
         
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model: {lora_model} with strength {lora_strength}")
         
-        # Generate the output image
+        # Generate the output image using the inpainting function
         output_img = generate_image(
             base_img,
             mask_img,
