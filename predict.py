@@ -1,61 +1,91 @@
 from cog import BasePredictor, Input, Path
 from PIL import Image
 import torch
+from diffusers import StableDiffusionInpaintPipeline
 
-# -----------------------------------------------------------------------------
-# Dummy image generation function.
-# Replace this function with your actual image generation logic.
-# For example, load your diffusion/inpainting pipeline, apply LoRA weights,
-# and generate an output image from the base image, mask, and prompt.
-# -----------------------------------------------------------------------------
+# =============================================================================
+# Replace the code in this function with your actual LoRA integration.
+# For example, load the LoRA .safetensors weights from the given model ID
+# and update the pipeline model parameters accordingly.
+# =============================================================================
+def load_lora_weights(pipe, lora_model: str, lora_strength: float):
+    print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
+    # Example (dummy): In your implementation, download the safetensors file from Hugging Face
+    # and apply the weights to the pipeline’s underlying model.
+    #
+    # Example pseudocode:
+    #   state_dict = load_safetensors(lora_model)  # your function to load the weights
+    #   pipe.unet = apply_lora(pipe.unet, state_dict, strength=lora_strength)
+    #
+    # For now, we simply return the unchanged pipeline.
+    return pipe
+
+# =============================================================================
+# This function loads the input images, resizes them to the desired output size,
+# sets up the inpainting pipeline, applies the LoRA weights, and finally runs the
+# pipeline to generate an output image using the given prompt.
+# =============================================================================
 def generate_image(base_img, mask_img, lora_model, prompt, lora_strength, prompt_strength, height, width, seed):
-    # Set the random seed for reproducibility.
+    # Set the seed for reproducibility
     torch.manual_seed(seed)
     
-    # (Your code to load/apply LoRA and process the prompt would go here.)
-    # For demonstration purposes we simply resize the base image and overlay some text.
-    img = base_img.resize((width, height))
+    # Resize base image and mask to the output dimensions
+    base_img = base_img.resize((width, height))
+    mask_img = mask_img.resize((width, height))
     
-    # Draw the prompt text on the image (as an example of modification)
-    import PIL.ImageDraw as ImageDraw
-    import PIL.ImageFont as ImageFont
-    draw = ImageDraw.Draw(img)
-    try:
-        # Try to load a TTF font; if unavailable, load the default font.
-        font = ImageFont.truetype("arial.ttf", 20)
-    except Exception:
-        font = ImageFont.load_default()
+    # Load the inpainting pipeline.
+    # (Here we use the stable-diffusion-inpainting model from RunwayML.)
+    pipe = StableDiffusionInpaintPipeline.from_pretrained(
+        "runwayml/stable-diffusion-inpainting",
+        revision="fp16",
+        torch_dtype=torch.float16
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pipe = pipe.to(device)
     
-    # Draw text indicating the prompt and its strength.
-    draw.text((10, 10), f"Prompt: {prompt}\nPrompt Strength: {prompt_strength}", fill=(255, 0, 0), font=font)
+    # Apply LoRA weights (replace the dummy implementation with your actual code)
+    pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
-    # (Optionally, you could blend in the mask image or other effects here.)
-    return img
+    print(f"Generating image using prompt: '{prompt}'")
+    
+    # Run the inpainting pipeline. The model uses:
+    #  - base_img as the starting image,
+    #  - mask_img to determine which areas to modify (white areas will be inpainted),
+    #  - prompt to guide the generation,
+    #  - guidance_scale (here prompt_strength) controls how strongly the prompt is followed.
+    output = pipe(
+        prompt=prompt,
+        image=base_img,
+        mask_image=mask_img,
+        num_inference_steps=50,
+        guidance_scale=prompt_strength
+    )
+    
+    # Return the generated image (first image from the pipeline's output list)
+    return output.images[0]
 
-# -----------------------------------------------------------------------------
+# =============================================================================
 # Predictor class for Cog
-# -----------------------------------------------------------------------------
+# =============================================================================
 class Predictor(BasePredictor):
     def setup(self):
-        # Load your base model here.
-        # For example:
-        # self.model = load_your_model_function(...)
-        print("Setting up the model...")
+        # Any one-time model setup can be performed here.
+        print("Model setup complete.")
     
     def predict(
         self,
         base_image: Path = Input(
-            description="Upload your base image (RGB)"
+            description="Upload your base image (RGB)."
         ),
         mask_image: Path = Input(
-            description="Upload your mask image (RGB)"
+            description="Upload your mask image (RGB). White areas will be inpainted with new content."
         ),
         lora_model: str = Input(
             description="Hugging Face LoRA model ID (e.g. shimopol/prezes)",
             default="shimopol/prezes"
         ),
         prompt: str = Input(
-            description="Text prompt to guide the generation",
+            description="Text prompt to guide the inpainting",
             default="A face"
         ),
         lora_strength: float = Input(
@@ -63,8 +93,8 @@ class Predictor(BasePredictor):
             default=1.0
         ),
         prompt_strength: float = Input(
-            description="Strength/scale factor for the prompt effect",
-            default=6.0
+            description="Guidance scale for the prompt (e.g. higher means stronger adherence to prompt)",
+            default=7.5
         ),
         height: int = Input(
             description="Output image height in pixels",
@@ -75,21 +105,21 @@ class Predictor(BasePredictor):
             default=512
         ),
         seed: int = Input(
-            description="Random seed",
+            description="Random seed for reproducibility",
             default=42
         )
     ) -> Path:
-        # Load the input images.
+        # Load and convert the input images
         base_img = Image.open(base_image).convert("RGB")
         mask_img = Image.open(mask_image).convert("RGB")
         
-        # Print information about the inputs.
-        print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-        print(f"Using prompt: '{prompt}' with strength {prompt_strength}")
+        print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
+        print(f"Applying LoRA model {lora_model} with strength {lora_strength}")
         
-        # Generate the output image (replace the dummy function with your model inference).
+        # Generate the output image using the provided parameters.
         output_img = generate_image(
-            base_img, mask_img,
+            base_img,
+            mask_img,
             lora_model,
             prompt,
             lora_strength,
@@ -99,7 +129,7 @@ class Predictor(BasePredictor):
             seed
         )
         
-        # Save the output image.
+        # Save the generated image (using WEBP format)
         output_path = "/tmp/output_0.webp"
         output_img.save(output_path, "WEBP")
         print(f"Output image saved to {output_path}")
