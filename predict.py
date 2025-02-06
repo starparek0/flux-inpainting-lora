@@ -4,17 +4,18 @@ import torch
 from diffusers import FluxInpaintPipeline
 
 # ------------------------------------------------------------------------------
-# This function is a placeholder for applying LoRA weights.
-# Replace its implementation with your actual logic for loading and merging
-# LoRA weights into your pipeline.
+# Placeholder function for applying LoRA weights.
+# Replace the content of this function with your actual logic for loading
+# and merging LoRA weights into the pipeline.
 # ------------------------------------------------------------------------------
 def load_lora_weights(pipe, lora_model: str, lora_strength: float):
     print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-    # TODO: Add your implementation for loading the LoRA safetensors and applying them.
+    # TODO: Insert your code here to load the safetensors file from lora_model
+    # and merge them into the pipeline weights.
     return pipe
 
 # ------------------------------------------------------------------------------
-# Generate an inpainted image using the Flux-based inpainting pipeline.
+# Generate an inpainted image using the Flux inpainting pipeline.
 # ------------------------------------------------------------------------------
 def generate_image(
     base_img: Image.Image,
@@ -30,17 +31,15 @@ def generate_image(
     # Set the random seed for reproducibility
     torch.manual_seed(seed)
     
-    # Resize the base and mask images to the desired output dimensions
+    # Resize the base and mask images to the desired dimensions
     base_img = base_img.resize((width, height))
     mask_img = mask_img.resize((width, height))
     
-    # Specify the model id. If you are using Flux 1 dev, adjust the id accordingly.
-    # For example, if the correct repository is "flux/flux-inpainting-dev", change it here.
-    model_id = "flux/flux-inpainting"  # Adjust this if needed.
+    # Use a valid model ID (do not include any "./" or forbidden characters)
+    model_id = "flux/flux-inpainting"  # Adjust this if your model repo is named differently.
     
     # Load the Flux inpainting pipeline.
-    # Note: We pass `use_auth_token=True` so that if the model is private/gated,
-    # authentication (e.g. via HF_HUB_TOKEN) is used.
+    # use_auth_token=True ensures that, if the model is gated or private, authentication is used.
     pipe = FluxInpaintPipeline.from_pretrained(
         model_id,
         local_files_only=False,
@@ -52,12 +51,12 @@ def generate_image(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
     
-    # Apply LoRA weights to the pipeline (this function must be implemented)
+    # Apply LoRA weights (your implementation must go inside load_lora_weights)
     pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
     print(f"Generating image using prompt: '{prompt}' with guidance scale {prompt_strength}")
     
-    # Run the inpainting pipeline
+    # Run the inpainting pipeline with the provided prompt and images
     output = pipe(
         prompt=prompt,
         image=base_img,
@@ -74,7 +73,7 @@ def generate_image(
 # ------------------------------------------------------------------------------
 class Predictor(BasePredictor):
     def setup(self):
-        # One-time setup if needed.
+        # One-time setup actions if needed.
         print("Flux inpainting model setup complete.")
     
     def predict(
@@ -86,11 +85,11 @@ class Predictor(BasePredictor):
             description="Upload your mask image (RGB). White areas indicate regions to inpaint."
         ),
         lora_model: str = Input(
-            description="Hugging Face LoRA model ID (for example, 'shimopol/jarek').",
+            description="Hugging Face LoRA model ID (e.g. 'shimopol/jarek').",
             default="shimopol/jarek"
         ),
         prompt: str = Input(
-            description="Text prompt to guide the inpainting process.",
+            description="Text prompt to guide the inpainting.",
             default="A face"
         ),
         lora_strength: float = Input(
@@ -98,7 +97,7 @@ class Predictor(BasePredictor):
             default=1.0
         ),
         prompt_strength: float = Input(
-            description="Guidance scale for the text prompt (higher means stronger influence).",
+            description="Guidance scale for the prompt (higher = stronger influence).",
             default=7.5
         ),
         height: int = Input(
@@ -114,14 +113,14 @@ class Predictor(BasePredictor):
             default=42
         )
     ) -> Path:
-        # Open base and mask images and convert them to RGB
+        # Open the base and mask images and convert them to RGB
         base_img = Image.open(base_image).convert("RGB")
         mask_img = Image.open(mask_image).convert("RGB")
         
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model: {lora_model} with strength {lora_strength}")
         
-        # Generate the output image using the inpainting function
+        # Generate the inpainted image
         output_img = generate_image(
             base_img,
             mask_img,
@@ -134,7 +133,7 @@ class Predictor(BasePredictor):
             seed
         )
         
-        # Save the generated image to a temporary file in WEBP format
+        # Save the generated image to a temporary file (WEBP format)
         output_path = "/tmp/output_0.webp"
         output_img.save(output_path, "WEBP")
         print(f"Output image saved to {output_path}")
