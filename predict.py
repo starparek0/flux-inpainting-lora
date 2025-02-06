@@ -1,62 +1,48 @@
-import os
-import torch
-from diffusers import FluxInpaintPipeline
-from cog import BasePredictor, Input, Path
+import io
+from PIL import Image
 
-class Predictor(BasePredictor):
-    def setup(self):
-        # Ustaw identyfikator repozytorium z modelem Flux (zmień, jeśli Twoje repo ma inną nazwę)
-        self.repo_id = "flux/flux-inpainting-dev"
-        # Jeśli repozytorium jest prywatne lub gated, HF_TOKEN musi być ustawiony jako zmienna środowiskowa
-        hf_token = os.environ.get("HF_TOKEN")
-        try:
-            self.pipe = FluxInpaintPipeline.from_pretrained(
-                self.repo_id,
-                token=hf_token  # Przekazujemy token – jeśli jest ustawiony, lub None, jeśli nie jest wymagany
-            ).to("cuda")
-            print(f"Model załadowany z HF Hub: {self.repo_id}")
-        except Exception as e:
-            raise EnvironmentError(f"Nie udało się załadować modelu '{self.repo_id}': {e}")
+def apply_mask(original: Image.Image, generated: Image.Image, mask: Image.Image) -> Image.Image:
+    """
+    Łączy oryginalny obraz z wygenerowanym fragmentem na podstawie maski.
+    Tam, gdzie maska ma wartość 255, wstawiany jest fragment z wygenerowanego obrazu.
+    """
+    # Dopasowanie rozmiarów obrazów
+    if original.size != generated.size:
+        generated = generated.resize(original.size)
+    if original.size != mask.size:
+        mask = mask.resize(original.size)
+    
+    # Konwersja maski do trybu szarości i binaryzacja (próg 128)
+    mask = mask.convert("L")
+    threshold = 128
+    mask = mask.point(lambda p: 255 if p > threshold else 0)
+    
+    # Łączenie obrazów: gdzie maska = 255, wybierany jest obraz wygenerowany, w przeciwnym razie oryginalny
+    final_image = Image.composite(generated, original, mask)
+    return final_image
 
-    def predict(
-        self,
-        prompt: str = Input(description="Tekst promptu", default="A face"),
-        prompt_strength: float = Input(description="Siła promptu", default=7.5),
-        lora_repo: str = Input(
-            description="Repozytorium LoRA (np. 'shimopol/jarek')", default="shimopol/jarek"
-        ),
-        lora_strength: float = Input(description="Siła LoRA", default=1.0),
-        input_image: Path = Input(description="Obraz bazowy"),
-        mask_image: Path = Input(description="Obraz maski (biały obszar – generacja)"),
-        width: int = Input(description="Szerokość outputu", default=512),
-        height: int = Input(description="Wysokość outputu", default=512),
-        seed: int = Input(description="Seed", default=42),
-    ) -> Path:
-        # Ustawiamy ziarno losowości
-        torch.manual_seed(seed)
-        print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
-        print(f"Applying LoRA model: {lora_repo} with strength {lora_strength}")
-
-        # Jeśli chcesz dynamicznie „nakładać” wagi LoRA na model, musisz zaimplementować funkcję, która pobierze
-        # wagi z repozytorium lora_repo i wprowadzi modyfikacje do self.pipe. Na potrzeby tego przykładu to miejsce
-        # pozostawiamy do implementacji:
-        # apply_lora_weights(self.pipe, repo_id=lora_repo, strength=lora_strength)
-
-        try:
-            # Wywołujemy pipeline – upewnij się, że przekazywane argumenty odpowiadają Twojej implementacji FluxInpaintPipeline
-            output = self.pipe(
-                prompt=prompt,
-                prompt_strength=prompt_strength,
-                image=input_image,
-                mask_image=mask_image,
-                width=width,
-                height=height,
-            )
-        except Exception as e:
-            raise EnvironmentError(f"Błąd podczas generacji obrazu: {e}")
-
-        output_img = output.images[0]
-        output_path = "/tmp/output_0.webp"
-        output_img.save(output_path)
-        print(f"Output image saved to {output_path}")
-        return Path(output_path)
+def predict(
+    prompt: str,
+    extra_lora: str,
+    image,  # Obiekt PIL.Image (przekonwertowany przez Cog)
+    mask,   # Obiekt PIL.Image (przekonwertowany przez Cog)
+    output_format: str = "png",
+) -> Image.Image:
+    """
+    Funkcja predict przyjmuje prompt, ścieżkę do wagi LoRA, obraz wejściowy oraz maskę.
+    Generuje nowy obraz, nakładając wygenerowany fragment tylko w obszarach określonych maską.
+    """
+    # Konwersja obrazu wejściowego do formatu RGB
+    input_image = image.convert("RGB")
+    # Konwersja maski do skali szarości
+    input_mask = mask.convert("L")
+    
+    # !!! TU WPISZ LOGIKĘ SWOJEGO MODELU !!!
+    # Poniżej znajduje się placeholder – dla demonstracji używamy kopii obrazu jako wygenerowanego obrazu.
+    # W rzeczywistości powinieneś wywołać funkcję, która generuje obraz na podstawie prompta oraz extra_lora.
+    generated_image = input_image.copy()
+    
+    # Nałożenie maski: fragment wygenerowany zastępuje oryginał w obszarach wskazanych maską
+    final_image = apply_mask(input_image, generated_image, input_mask)
+    
+    return final_image
