@@ -4,13 +4,15 @@ from cog import BasePredictor, Input, Path
 
 class Predictor(BasePredictor):
     def setup(self):
-        # Ścieżka do lokalnego modelu (upewnij się, że wszystkie pliki modelu znajdują się w tym folderze)
+        # Ustaw ścieżkę do lokalnego modelu Flux (wszystkie pliki modelu muszą być dostępne w tym folderze)
         model_path = "./models/flux-inpainting-dev"
         try:
+            # Używamy local_files_only=True, żeby nie próbować pobierać modelu z Hugging Face Hub
             self.pipe = FluxInpaintPipeline.from_pretrained(
                 model_path,
-                local_files_only=True  # wymusza użycie lokalnych plików
+                local_files_only=True
             ).to("cuda")
+            print(f"Model załadowany z: {model_path}")
         except Exception as e:
             raise EnvironmentError(f"Nie udało się załadować modelu z '{model_path}': {e}")
 
@@ -33,13 +35,12 @@ class Predictor(BasePredictor):
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model: {lora_repo} with strength {lora_strength}")
 
-        # Jeżeli pipeline posiada metodę do dynamicznego ładowania wag LoRA,
-        # umieść tutaj odpowiedni kod, np.:
+        # Jeśli masz funkcję do nakładania wag LoRA, dodaj ją tutaj.
+        # Przykładowo, jeśli Twój pipeline ma metodę apply_lora_weights, wywołaj:
         #
-        # self.pipe.apply_lora_weights(lora_repo, lora_strength)
+        # self.pipe.apply_lora_weights(lora_repo, strength=lora_strength)
         #
-        # Jeśli nie, należy przygotować pipeline, który już zawiera te modyfikacje,
-        # lub zaimplementować ręcznie logikę nakładania wag.
+        # Jeśli nie – upewnij się, że wagi LoRA są już uwzględnione w Twoim modelu lub zaimplementuj taką logikę.
 
         try:
             output = self.pipe(
