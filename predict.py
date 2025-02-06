@@ -1,20 +1,22 @@
+import os
 import torch
 from diffusers import FluxInpaintPipeline
 from cog import BasePredictor, Input, Path
 
 class Predictor(BasePredictor):
     def setup(self):
-        # Ustaw ścieżkę do lokalnego modelu Flux (wszystkie pliki modelu muszą być dostępne w tym folderze)
-        model_path = "./models/flux-inpainting-dev"
+        # Ustaw identyfikator repozytorium z modelem Flux (zmień, jeśli Twoje repo ma inną nazwę)
+        self.repo_id = "flux/flux-inpainting-dev"
+        # Jeśli repozytorium jest prywatne lub gated, HF_TOKEN musi być ustawiony jako zmienna środowiskowa
+        hf_token = os.environ.get("HF_TOKEN")
         try:
-            # Używamy local_files_only=True, żeby nie próbować pobierać modelu z Hugging Face Hub
             self.pipe = FluxInpaintPipeline.from_pretrained(
-                model_path,
-                local_files_only=True
+                self.repo_id,
+                token=hf_token  # Przekazujemy token – jeśli jest ustawiony, lub None, jeśli nie jest wymagany
             ).to("cuda")
-            print(f"Model załadowany z: {model_path}")
+            print(f"Model załadowany z HF Hub: {self.repo_id}")
         except Exception as e:
-            raise EnvironmentError(f"Nie udało się załadować modelu z '{model_path}': {e}")
+            raise EnvironmentError(f"Nie udało się załadować modelu '{self.repo_id}': {e}")
 
     def predict(
         self,
@@ -30,19 +32,18 @@ class Predictor(BasePredictor):
         height: int = Input(description="Wysokość outputu", default=512),
         seed: int = Input(description="Seed", default=42),
     ) -> Path:
-        # Ustawienie ziarna losowości
+        # Ustawiamy ziarno losowości
         torch.manual_seed(seed)
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model: {lora_repo} with strength {lora_strength}")
 
-        # Jeśli masz funkcję do nakładania wag LoRA, dodaj ją tutaj.
-        # Przykładowo, jeśli Twój pipeline ma metodę apply_lora_weights, wywołaj:
-        #
-        # self.pipe.apply_lora_weights(lora_repo, strength=lora_strength)
-        #
-        # Jeśli nie – upewnij się, że wagi LoRA są już uwzględnione w Twoim modelu lub zaimplementuj taką logikę.
+        # Jeśli chcesz dynamicznie „nakładać” wagi LoRA na model, musisz zaimplementować funkcję, która pobierze
+        # wagi z repozytorium lora_repo i wprowadzi modyfikacje do self.pipe. Na potrzeby tego przykładu to miejsce
+        # pozostawiamy do implementacji:
+        # apply_lora_weights(self.pipe, repo_id=lora_repo, strength=lora_strength)
 
         try:
+            # Wywołujemy pipeline – upewnij się, że przekazywane argumenty odpowiadają Twojej implementacji FluxInpaintPipeline
             output = self.pipe(
                 prompt=prompt,
                 prompt_strength=prompt_strength,
