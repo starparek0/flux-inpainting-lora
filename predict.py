@@ -5,9 +5,8 @@ from cog import BasePredictor, Input, Path
 class Predictor(BasePredictor):
     @classmethod
     def setup(cls):
-        # Jeśli chcesz, możesz tu wykonać wstępne ustawienia,
-        # ale kluczowe elementy ładowania modelu wykonamy w metodzie predict.
-        return
+        # Możesz wykonać wstępne ustawienia tutaj, jeśli potrzebujesz.
+        pass
 
     @torch.inference_mode()
     def predict(
@@ -15,41 +14,43 @@ class Predictor(BasePredictor):
         prompt: str = Input(default="A face", description="Tekst promptu"),
         prompt_strength: float = Input(default=7.5, description="Siła promptu (guidance scale)"),
         input_image: Path = Input(description="Obraz wejściowy (base image)"),
-        mask_image: Path = Input(description="Obraz maski – białe pole tam, gdzie mają być zmiany"),
-        lora_model: str = Input(default="shimopol/prezes", description="Repozytorium LoRA"),
+        mask_image: Path = Input(description="Obraz maski – białe obszary, gdzie ma być zmiana"),
+        lora_model: str = Input(default="shimopol/jarek", description="Repozytorium modelu LoRA"),
         lora_strength: float = Input(default=1.0, description="Siła modelu LoRA"),
+        inpaint_repo: str = Input(
+            default="flux/flux-inpainting-dev",
+            description="Repozytorium modelu inpaint (np. flux/flux-inpainting-dev)"
+        ),
         output_width: int = Input(default=512, description="Szerokość obrazu wyjściowego"),
         output_height: int = Input(default=512, description="Wysokość obrazu wyjściowego"),
         seed: int = Input(default=42, description="Seed"),
-        hf_token: str = Input(default="", description="Hugging Face token (jeśli wymagany)")
+        hf_token: str = Input(default="", description="Token Hugging Face (jeśli wymagany)"),
+        local_files_only: bool = Input(default=False, description="Używać wyłącznie lokalnych plików?")
     ) -> Path:
-        # Ustawienie seeda
+        # Ustawienie seeda dla generatora
         generator = torch.Generator("cuda").manual_seed(seed)
         
-        # Upewnij się, że repozytorium modelu inpaint jest poprawne.
-        # Jeśli korzystasz z publicznego modelu, zmień poniżej na np. "flux/flux-inpainting".
-        repo_id = "flux/flux-inpainting"  # <- modyfikuj, jeśli potrzebujesz innej wersji
-
+        # Próba załadowania modelu inpaint z podanego repozytorium
         try:
             pipe = FluxInpaintPipeline.from_pretrained(
-                repo_id,
+                inpaint_repo,
                 torch_dtype=torch.float16,
-                token=hf_token if hf_token != "" else None
+                token=hf_token if hf_token else None,
+                local_files_only=local_files_only
             )
         except Exception as e:
-            raise EnvironmentError(f"Nie udało się załadować modelu '{repo_id}': {e}")
-
-        # Jeśli chcesz zastosować LoRA, zakładamy, że pipeline ma metodę apply_lora.
-        # Jeśli nie, musisz wprowadzić odpowiednie modyfikacje.
+            raise EnvironmentError(f"Nie udało się załadować modelu '{inpaint_repo}': {e}")
+        
+        # Jeśli podano model LoRA – próba jego zastosowania
         if lora_model:
             try:
-                # Przykładowe wywołanie – upewnij się, że taka funkcja istnieje w Twojej implementacji.
+                # UWAGA: Upewnij się, że Twoja wersja pipeline posiada metodę apply_lora.
                 pipe.apply_lora(lora_model, strength=lora_strength)
             except Exception as e:
-                # Możesz też po prostu wypisać ostrzeżenie, jeśli LoRA nie jest dostępna.
+                # Jeśli nie uda się zastosować LoRA, wyświetl ostrzeżenie, ale nie przerywaj pracy.
                 print(f"Ostrzeżenie: Nie udało się zastosować LoRA '{lora_model}': {e}")
-
-        # Uruchomienie pipeline – przekazujemy prompt, obraz wejściowy, maskę oraz pozostałe ustawienia.
+        
+        # Wywołanie pipeline – przekazujemy prompt, obrazy oraz parametry generacji
         output = pipe(
             prompt=prompt,
             image=input_image,
@@ -60,8 +61,8 @@ class Predictor(BasePredictor):
             guidance_scale=prompt_strength,
             generator=generator
         )
-
-        # Zapisujemy wynik do pliku WEBP
+        
+        # Zapisanie obrazu wyjściowego do pliku WEBP
         output_path = Path("/tmp/output_0.webp")
         output.images[0].save(output_path)
         return output_path
