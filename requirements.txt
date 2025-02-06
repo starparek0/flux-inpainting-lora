@@ -24,3 +24,4 @@ uvloop==0.21.0
 watchfiles==1.0.4
 websockets==14.2
 safetensors>=0.3.0
+flux==1.0.0
