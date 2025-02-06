@@ -4,18 +4,16 @@ import torch
 from diffusers import FluxInpaintPipeline
 
 # ------------------------------------------------------------------------------
-# Placeholder function for applying LoRA weights.
-# Replace the content of this function with your actual logic for loading
-# and merging LoRA weights into the pipeline.
+# Placeholder for merging LoRA weights.
+# Replace this function with your actual logic for loading and applying LoRA weights.
 # ------------------------------------------------------------------------------
 def load_lora_weights(pipe, lora_model: str, lora_strength: float):
     print(f"Loading LoRA weights from {lora_model} with strength {lora_strength}")
-    # TODO: Insert your code here to load the safetensors file from lora_model
-    # and merge them into the pipeline weights.
+    # TODO: Implement your LoRA weights merging here.
     return pipe
 
 # ------------------------------------------------------------------------------
-# Generate an inpainted image using the Flux inpainting pipeline.
+# Function to generate an inpainted image using FluxInpaintPipeline.
 # ------------------------------------------------------------------------------
 def generate_image(
     base_img: Image.Image,
@@ -31,32 +29,35 @@ def generate_image(
     # Set the random seed for reproducibility
     torch.manual_seed(seed)
     
-    # Resize the base and mask images to the desired dimensions
+    # Resize images to desired dimensions
     base_img = base_img.resize((width, height))
     mask_img = mask_img.resize((width, height))
     
-    # Use a valid model ID (do not include any "./" or forbidden characters)
-    model_id = "flux/flux-inpainting"  # Adjust this if your model repo is named differently.
+    # IMPORTANT: Use the correct model repository ID.
+    # Here we use "flux/flux-inpainting-dev" (adjust as needed).
+    model_id = "flux/flux-inpainting-dev"
     
-    # Load the Flux inpainting pipeline.
-    # use_auth_token=True ensures that, if the model is gated or private, authentication is used.
-    pipe = FluxInpaintPipeline.from_pretrained(
-        model_id,
-        local_files_only=False,
-        torch_dtype=torch.float16,
-        use_auth_token=True
-    )
-    
-    # Move the pipeline to GPU if available
+    try:
+        pipe = FluxInpaintPipeline.from_pretrained(
+            model_id,
+            local_files_only=False,  # Set to True if you want to load only from local cache.
+            torch_dtype=torch.float16,
+            use_auth_token=True       # Requires HF_HUB_TOKEN to be set in your environment.
+        )
+    except Exception as e:
+        print(f"Error loading model from '{model_id}': {e}")
+        raise e
+
+    # Move pipeline to the appropriate device
     device = "cuda" if torch.cuda.is_available() else "cpu"
     pipe = pipe.to(device)
     
-    # Apply LoRA weights (your implementation must go inside load_lora_weights)
+    # Apply LoRA weights (if implemented)
     pipe = load_lora_weights(pipe, lora_model, lora_strength)
     
     print(f"Generating image using prompt: '{prompt}' with guidance scale {prompt_strength}")
     
-    # Run the inpainting pipeline with the provided prompt and images
+    # Run the inpainting pipeline
     output = pipe(
         prompt=prompt,
         image=base_img,
@@ -65,7 +66,6 @@ def generate_image(
         guidance_scale=prompt_strength
     )
     
-    # Return the first generated image
     return output.images[0]
 
 # ------------------------------------------------------------------------------
@@ -73,7 +73,6 @@ def generate_image(
 # ------------------------------------------------------------------------------
 class Predictor(BasePredictor):
     def setup(self):
-        # One-time setup actions if needed.
         print("Flux inpainting model setup complete.")
     
     def predict(
@@ -113,14 +112,13 @@ class Predictor(BasePredictor):
             default=42
         )
     ) -> Path:
-        # Open the base and mask images and convert them to RGB
+        # Open and convert images to RGB
         base_img = Image.open(base_image).convert("RGB")
         mask_img = Image.open(mask_image).convert("RGB")
         
         print(f"Using prompt: '{prompt}' with prompt strength {prompt_strength}")
         print(f"Applying LoRA model: {lora_model} with strength {lora_strength}")
         
-        # Generate the inpainted image
         output_img = generate_image(
             base_img,
             mask_img,
@@ -133,7 +131,7 @@ class Predictor(BasePredictor):
             seed
         )
         
-        # Save the generated image to a temporary file (WEBP format)
+        # Save the output image
         output_path = "/tmp/output_0.webp"
         output_img.save(output_path, "WEBP")
         print(f"Output image saved to {output_path}")
